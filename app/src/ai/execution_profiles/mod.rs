@@ -182,8 +182,7 @@ impl ComputerUsePermission {
 pub enum AskUserQuestionPermission {
     /// Never pause; skip questions and continue with best judgment.
     Never,
-    /// 在 openWarp 中等同于 `AlwaysAsk`:auto-approve 模式不再静默跳过用户问题,
-    /// 只对 shell/编辑等执行类工具自动通过。变体名保留以兼容已序列化的 profile。
+    /// Pause and wait for the user, unless auto-approve mode is enabled.
     #[default]
     AskExceptInAutoApprove,
     /// Always pause and wait for the user to answer before continuing, even in auto-approve mode.
@@ -199,7 +198,7 @@ impl AskUserQuestionPermission {
         match self {
             AskUserQuestionPermission::AskExceptInAutoApprove
             | AskUserQuestionPermission::Unknown => {
-                "The Agent may ask a question and will pause for your response, even when auto-approve is on (auto-approve only applies to shell/edit tools)."
+                "The Agent may ask a question and pause for your response, but will continue automatically when auto-approve is on."
             }
             AskUserQuestionPermission::Never => {
                 "The Agent will not ask questions and will continue with its best judgment."
@@ -248,14 +247,6 @@ pub struct AIExecutionProfile {
     pub coding_model: Option<LLMId>,
     pub cli_agent_model: Option<LLMId>,
     pub computer_use_model: Option<LLMId>,
-    /// 用于生成会话标题的模型。`None` 时回退到 `base_model`。
-    pub title_model: Option<LLMId>,
-    /// 主动式 AI(prompt suggestions / NLD / relevant files)使用的模型。
-    /// `None` 时回退到 `base_model`。建议选小/快/便宜的 BYOP 模型。
-    pub active_ai_model: Option<LLMId>,
-    /// Next Command(灰色补全/zero-state 建议)使用的模型。
-    /// `None` 时回退到 `base_model`。低延迟敏感,建议选最便宜/最快的 BYOP 模型。
-    pub next_command_model: Option<LLMId>,
 
     pub context_window_limit: Option<u32>,
 
@@ -287,11 +278,8 @@ impl Default for AIExecutionProfile {
             coding_model: None,
             cli_agent_model: None,
             computer_use_model: None,
-            title_model: None,
-            active_ai_model: None,
-            next_command_model: None,
             context_window_limit: None,
-            autosync_plans_to_warp_drive: false,
+            autosync_plans_to_warp_drive: true,
             web_search_enabled: true,
         }
     }
@@ -342,9 +330,6 @@ impl AIExecutionProfile {
             coding_model: None,
             cli_agent_model: None,
             computer_use_model: None,
-            title_model: None,
-            active_ai_model: None,
-            next_command_model: None,
             context_window_limit: None,
             autosync_plans_to_warp_drive: false,
             web_search_enabled: true,
@@ -400,9 +385,6 @@ impl AIExecutionProfile {
             coding_model: None,
             cli_agent_model: None,
             computer_use_model: None,
-            title_model: None,
-            active_ai_model: None,
-            next_command_model: None,
             context_window_limit: None,
             autosync_plans_to_warp_drive: FeatureFlag::SyncAmbientPlans.is_enabled(),
             web_search_enabled: true,

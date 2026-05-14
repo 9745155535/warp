@@ -167,7 +167,7 @@ impl TerminalManager {
         resources: TerminalViewResources,
         initial_size: Vector2F,
         window_id: WindowId,
-        is_deferring_terminal_session_connection: bool,
+        is_cloud_mode: bool,
         ctx: &mut AppContext,
     ) -> Self {
         // Create all the necessary channels we need for communication.
@@ -195,7 +195,7 @@ impl TerminalManager {
         // TODO: use the sharer's size.
         let sizes = compute_block_size(initial_size, ctx);
 
-        let model = if is_deferring_terminal_session_connection {
+        let model = if is_cloud_mode {
             TerminalModel::new_for_cloud_mode_shared_session_viewer(
                 sizes,
                 terminal_colors_list(ctx),
@@ -252,6 +252,7 @@ impl TerminalManager {
                 None, // initial_input_config - not used for viewer
                 None, // no conversation restoration for shared session viewer
                 Some(inactive_pty_reads_rx.clone()),
+                is_cloud_mode,
                 ctx,
             )
         });
@@ -737,11 +738,13 @@ impl TerminalManager {
 
                 view.update(ctx, |terminal_view, ctx| {
                     if let Some(task_id) = ambient_task_id {
-                        terminal_view
-                            .ambient_agent_view_model()
-                            .update(ctx, |model, ctx| {
+                        if let Some(ambient_agent_view_model) =
+                            terminal_view.ambient_agent_view_model()
+                        {
+                            ambient_agent_view_model.update(ctx, |model, ctx| {
                                 model.enter_viewing_existing_session(task_id, ctx);
                             });
+                        }
                     }
 
                     terminal_view.on_session_share_joined(
@@ -764,13 +767,15 @@ impl TerminalManager {
                 };
                 let is_ambient_agent = model.lock().is_shared_ambient_agent_session();
                 if is_ambient_agent {
-                    Self::ambient_session_ended(
+                    if !Self::end_current_ambient_session(
                         &view,
                         model.clone(),
                         &current_network,
                         &network,
                         ctx,
-                    );
+                    ) {
+                        return;
+                    }
                 } else {
                     Self::shared_session_ended(&view, model.clone(), ctx);
                 }
@@ -1534,13 +1539,19 @@ impl TerminalManager {
             .clear_write_to_pty_events_for_shared_session_tx();
     }
 
-    fn ambient_session_ended(
+    fn end_current_ambient_session(
         terminal_view: &ViewHandle<TerminalView>,
         model: Arc<FairMutex<TerminalModel>>,
         current_network: &Arc<FairMutex<Option<ModelHandle<Network>>>>,
         ended_network: &ModelHandle<Network>,
         ctx: &mut AppContext,
-    ) {
+    ) -> bool {
+        let ended_session_id = ended_network.as_ref(ctx).session_id();
+        if !Self::current_network(current_network)
+            .is_some_and(|network| network.as_ref(ctx).session_id() == ended_session_id)
+        {
+            return false;
+        }
         Manager::handle(ctx).update(ctx, |manager, _| {
             manager.left_share(terminal_view.id());
         });
@@ -1548,13 +1559,23 @@ impl TerminalManager {
         model
             .lock()
             .clear_write_to_pty_events_for_shared_session_tx();
-
-        let ended_session_id = ended_network.as_ref(ctx).session_id();
+        if FeatureFlag::HandoffCloudCloud.is_enabled() {
+            terminal_view.update(ctx, |terminal_view, ctx| {
+                if let Some(ambient_agent_view_model) =
+                    terminal_view.ambient_agent_view_model().cloned()
+                {
+                    ambient_agent_view_model.update(ctx, |model, _| {
+                        model.record_ambient_execution_ended(ended_session_id);
+                    });
+                }
+            });
+        }
         if Self::current_network(current_network)
             .is_some_and(|network| network.as_ref(ctx).session_id() == ended_session_id)
         {
             *current_network.lock() = None;
         }
+        true
     }
 }
 

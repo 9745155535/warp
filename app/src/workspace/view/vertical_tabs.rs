@@ -6,13 +6,12 @@ use crate::code::editor::{add_color, remove_color};
 use crate::code::icon_from_file_path;
 use crate::safe_triangle::SafeTriangle;
 use crate::send_telemetry_from_app_ctx;
-use crate::terminal::cli_agent_sessions::listener::session_supports_rich_status;
+use crate::terminal::cli_agent_sessions::listener::agent_supports_rich_status;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::view::TerminalViewState;
 use crate::terminal::CLIAgent;
-use crate::ui_components::icon_with_status::{
-    render_cli_agent_logo, render_icon_with_status, IconWithStatusSizing, IconWithStatusVariant,
-};
+use crate::ui_components::agent_icon::terminal_view_agent_icon_variant;
+use crate::ui_components::icon_with_status::{render_icon_with_status, IconWithStatusVariant};
 use crate::workspace::view::vertical_tabs::telemetry::{
     VerticalTabsChipEntrypoint, VerticalTabsTelemetryEvent,
 };
@@ -110,27 +109,10 @@ const TAB_COLOR_HOVER_OPACITY: Opacity = 50;
 // Circular icon constants
 const ICON_WITH_STATUS_GAP: f32 = 8.;
 pub(super) const VERTICAL_TABS_DETAIL_SIDECAR_POSITION_ID: &str = "vertical_tabs:detail_sidecar";
-const VERTICAL_TABS_STATUS_BADGE_ICON_SIZE: f32 = 9.;
-const VERTICAL_TABS_STATUS_BADGE_PADDING: f32 = 1.5;
-const VERTICAL_TABS_STATUS_BADGE_OFFSET: (f32, f32) = (2., 2.);
 
-const VERTICAL_TABS_SIZING: IconWithStatusSizing = IconWithStatusSizing {
-    icon_size: 16.,
-    padding: 4.,
-    badge_icon_size: VERTICAL_TABS_STATUS_BADGE_ICON_SIZE,
-    badge_padding: VERTICAL_TABS_STATUS_BADGE_PADDING,
-    overall_size_override: None,
-    badge_offset: VERTICAL_TABS_STATUS_BADGE_OFFSET,
-};
-
-const VERTICAL_TABS_AGENT_SIZING: IconWithStatusSizing = IconWithStatusSizing {
-    icon_size: 10.,
-    padding: 5.,
-    badge_icon_size: VERTICAL_TABS_STATUS_BADGE_ICON_SIZE,
-    badge_padding: VERTICAL_TABS_STATUS_BADGE_PADDING,
-    overall_size_override: Some(24.),
-    badge_offset: VERTICAL_TABS_STATUS_BADGE_OFFSET,
-};
+/// Total size of the icon-with-status component rendered for each vertical-tabs row.
+/// Sub-components (circle, badge, cloud) are derived inside `render_icon_with_status`.
+const VERTICAL_TABS_ICON_SIZE: f32 = 24.;
 
 fn vtab_pane_row_position_id(pane_group_id: EntityId, pane_id: PaneId) -> String {
     format!("vertical_tabs:pane_row:{pane_group_id:?}:{pane_id}")
@@ -264,14 +246,13 @@ fn render_pane_icon_with_status(
     variant: IconWithStatusVariant,
     theme: &WarpTheme,
 ) -> Box<dyn Element> {
-    let sizing = match &variant {
-        IconWithStatusVariant::OzAgent { .. } => &VERTICAL_TABS_AGENT_SIZING,
-        IconWithStatusVariant::CLIAgent { status, .. } if status.is_some() => {
-            &VERTICAL_TABS_AGENT_SIZING
-        }
-        _ => &VERTICAL_TABS_SIZING,
-    };
-    render_icon_with_status(variant, sizing, theme, theme.background())
+    render_icon_with_status(
+        variant,
+        VERTICAL_TABS_ICON_SIZE,
+        0.,
+        theme,
+        theme.background(),
+    )
 }
 
 #[derive(Clone, Default)]
@@ -751,7 +732,7 @@ enum VerticalTabsResolvedMode {
 enum SummaryPaneKind {
     Terminal,
     OzAgent { is_ambient: bool },
-    CLIAgent { agent: CLIAgent },
+    CLIAgent { agent: CLIAgent, is_ambient: bool },
     Code { title: String },
     CodeDiff,
     File,
@@ -1252,13 +1233,12 @@ fn render_detail_kind_badge_icon(
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
             let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
-            if let Some(session) = cli_agent_session {
-                let color = session
-                    .agent
-                    .brand_color()
+            if let Some(icon) = cli_agent_session.and_then(|session| session.agent.icon()) {
+                let color = cli_agent_session
+                    .and_then(|session| session.agent.brand_color())
                     .map(WarpThemeFill::Solid)
                     .unwrap_or_else(|| theme.accent());
-                return render_cli_agent_logo(session.agent, color, disabled_text);
+                return icon.to_warpui_icon(color).finish();
             }
 
             let icon = if terminal_view.is_ambient_agent_session(app) {
@@ -1330,7 +1310,7 @@ fn render_settings_button(
 
             if hover_state.is_hovered() && !is_popup_open {
                 let tooltip = ui_builder
-                    .tool_tip(crate::t!("vertical-tabs-view-options-tooltip"))
+                    .tool_tip("View options".to_string())
                     .build()
                     .finish();
                 let mut stack = Stack::new().with_child(button_container);
@@ -1406,12 +1386,12 @@ fn render_new_tab_button(
         let contents = if hover_state.is_hovered() {
             let tooltip = if let Some(sublabel) = tab_configs_keybinding.clone() {
                 ui_builder
-                    .tool_tip_with_sublabel(crate::t!("workspace-tab-configs-tooltip"), sublabel)
+                    .tool_tip_with_sublabel("Tab configs".to_string(), sublabel)
                     .build()
                     .finish()
             } else {
                 ui_builder
-                    .tool_tip(crate::t!("workspace-tab-configs-tooltip"))
+                    .tool_tip("Tab configs".to_string())
                     .build()
                     .finish()
             };
@@ -1515,13 +1495,9 @@ fn render_groups(
 
     if workspace.tabs.is_empty() {
         return Container::new(
-            Text::new_inline(
-                crate::t!("vertical-tabs-no-tabs-open"),
-                appearance.ui_font_family(),
-                12.,
-            )
-            .with_color(theme.sub_text_color(theme.background()).into())
-            .finish(),
+            Text::new_inline("No tabs open", appearance.ui_font_family(), 12.)
+                .with_color(theme.sub_text_color(theme.background()).into())
+                .finish(),
         )
         .with_padding(Padding::uniform(12.))
         .finish();
@@ -2267,7 +2243,7 @@ fn render_group_header(props: GroupHeaderProps<'_>, app: &AppContext) -> Box<dyn
     let theme = appearance.theme();
     let title = pane_group.display_title(app);
     let title = if title.is_empty() {
-        crate::t!("vertical-tabs-untitled-tab")
+        "Untitled tab".to_string()
     } else {
         title
     };
@@ -2340,39 +2316,8 @@ fn resolve_icon_with_status_variant(
         TypedPane::Terminal(terminal_pane) => {
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
-            let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
-            let is_plugin_backed = cli_agent_session.is_some_and(|s| s.listener.is_some());
-            let is_ambient = terminal_view.is_ambient_agent_session(app);
-            let has_conversation = terminal_view
-                .selected_conversation_display_title(app)
-                .is_some();
-            let is_oz_agent = has_conversation || is_ambient;
-
-            if let Some(session) = cli_agent_session
-                .filter(|s| s.listener.is_some())
-                .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
-            {
-                IconWithStatusVariant::CLIAgent {
-                    agent: session.agent,
-                    status: if session_supports_rich_status(session) {
-                        Some(session.status.to_conversation_status())
-                    } else {
-                        None
-                    },
-                }
-            } else if let Some(session) = cli_agent_session
-                .filter(|_| !is_plugin_backed)
-                .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
-            {
-                IconWithStatusVariant::CLIAgent {
-                    agent: session.agent,
-                    status: None,
-                }
-            } else if is_oz_agent {
-                IconWithStatusVariant::OzAgent {
-                    status: terminal_view.selected_conversation_status_for_display(app),
-                    is_ambient,
-                }
+            if let Some(variant) = terminal_view_agent_icon_variant(terminal_view, app) {
+                variant
             } else {
                 // Plain terminal: use foreground color per design spec
                 IconWithStatusVariant::Neutral {
@@ -2571,22 +2516,16 @@ impl TypedPane<'_> {
             TypedPane::Terminal(terminal_pane) => {
                 let terminal_view = terminal_pane.terminal_view(app);
                 let terminal_view = terminal_view.as_ref(app);
-                if let Some(session) =
-                    CLIAgentSessionsModel::as_ref(app).session(terminal_view.id())
-                {
-                    return SummaryPaneKind::CLIAgent {
-                        agent: session.agent,
-                    };
-                }
-                let is_ambient = terminal_view.is_ambient_agent_session(app);
-                if terminal_view
-                    .selected_conversation_display_title(app)
-                    .is_some()
-                    || is_ambient
-                {
-                    SummaryPaneKind::OzAgent { is_ambient }
-                } else {
-                    SummaryPaneKind::Terminal
+                // Route through the shared helper so summary mode agrees with
+                // `resolve_icon_with_status_variant` on what the tab represents.
+                match terminal_view_agent_icon_variant(terminal_view, app) {
+                    Some(IconWithStatusVariant::OzAgent { is_ambient, .. }) => {
+                        SummaryPaneKind::OzAgent { is_ambient }
+                    }
+                    Some(IconWithStatusVariant::CLIAgent {
+                        agent, is_ambient, ..
+                    }) => SummaryPaneKind::CLIAgent { agent, is_ambient },
+                    Some(_) | None => SummaryPaneKind::Terminal,
                 }
             }
             TypedPane::Code(_) => SummaryPaneKind::Code {
@@ -2616,25 +2555,21 @@ impl TypedPane<'_> {
         matches!(self, TypedPane::Terminal(_) | TypedPane::Code(_))
             || self.warp_drive_object_type().is_some()
     }
-    fn kind_label(&self) -> String {
+    fn kind_label(&self) -> &'static str {
         match self {
-            TypedPane::Terminal(_) => crate::t!("vertical-tabs-pane-kind-terminal"),
-            TypedPane::Code(_) => crate::t!("vertical-tabs-pane-kind-code"),
-            TypedPane::CodeDiff => crate::t!("vertical-tabs-pane-kind-code-diff"),
-            TypedPane::File => crate::t!("vertical-tabs-pane-kind-file"),
-            TypedPane::Notebook { .. } => crate::t!("vertical-tabs-pane-kind-notebook"),
-            TypedPane::Workflow { .. } => crate::t!("vertical-tabs-pane-kind-workflow"),
-            TypedPane::Settings => crate::t!("settings-title"),
-            TypedPane::EnvVarCollection => {
-                crate::t!("vertical-tabs-pane-kind-environment-variables")
-            }
-            TypedPane::EnvironmentManagement => crate::t!("vertical-tabs-pane-kind-environments"),
-            TypedPane::AIFact => crate::t!("vertical-tabs-pane-kind-rules"),
-            TypedPane::AIDocument => crate::t!("vertical-tabs-pane-kind-plan"),
-            TypedPane::ExecutionProfileEditor => {
-                crate::t!("vertical-tabs-pane-kind-execution-profile")
-            }
-            TypedPane::Other => crate::t!("vertical-tabs-pane-kind-other"),
+            TypedPane::Terminal(_) => "Terminal",
+            TypedPane::Code(_) => "Code",
+            TypedPane::CodeDiff => "Code Diff",
+            TypedPane::File => "File",
+            TypedPane::Notebook { .. } => "Notebook",
+            TypedPane::Workflow { .. } => "Workflow",
+            TypedPane::Settings => "Settings",
+            TypedPane::EnvVarCollection => "Environment Variables",
+            TypedPane::EnvironmentManagement => "Environments",
+            TypedPane::AIFact => "Rules",
+            TypedPane::AIDocument => "Plan",
+            TypedPane::ExecutionProfileEditor => "Execution Profile",
+            TypedPane::Other => "Other",
         }
     }
 
@@ -3097,7 +3032,7 @@ fn terminal_primary_line_data(
     }
 
     TerminalPrimaryLineData::Text {
-        text: crate::t!("vertical-tabs-new-session"),
+        text: "New session".to_string(),
         font: TerminalPrimaryLineFont::Ui,
     }
 }
@@ -3106,9 +3041,9 @@ fn terminal_kind_badge_label(is_oz_agent: bool, cli_agent: Option<CLIAgent>) -> 
     if let Some(cli_agent) = cli_agent {
         cli_agent.display_name().to_string()
     } else if is_oz_agent {
-        crate::t!("vertical-tabs-terminal-kind-oz")
+        "Oz".to_string()
     } else {
-        crate::t!("vertical-tabs-pane-kind-terminal")
+        "Terminal".to_string()
     }
 }
 
@@ -3252,7 +3187,6 @@ impl PaneGroup {
             IPaneType::ExecutionProfileEditor => TypedPane::ExecutionProfileEditor,
             IPaneType::GetStarted
             | IPaneType::NetworkLog
-            | IPaneType::SshServer
             | IPaneType::Welcome
             | IPaneType::DeferredPlaceholder => TypedPane::Other,
             #[cfg(test)]
@@ -3674,95 +3608,103 @@ fn render_summary_pane_kind_icons(
 ) -> Box<dyn Element> {
     let theme = appearance.theme();
     match icons {
-        SummaryPaneKindIcons::Single(kind) => render_summary_pane_kind_icon_circle(
-            kind,
-            VERTICAL_TABS_SIZING.icon_size,
-            VERTICAL_TABS_SIZING.padding,
-            appearance,
-        ),
+        SummaryPaneKindIcons::Single(kind) => {
+            render_summary_pane_kind_icon_circle(kind, VERTICAL_TABS_ICON_SIZE, appearance)
+        }
         SummaryPaneKindIcons::Pair { primary, secondary } => {
-            let sizing = &VERTICAL_TABS_AGENT_SIZING;
-            let circle_size = sizing.icon_size + sizing.padding * 2.;
-            let overall_size = sizing.overall_size_override.unwrap_or(circle_size);
-            let primary_icon = render_summary_pane_kind_icon_circle(
-                primary,
-                sizing.icon_size,
-                sizing.padding,
-                appearance,
-            );
-            let secondary_icon = render_summary_pane_kind_icon_circle(
-                secondary,
-                sizing.badge_icon_size,
-                sizing.badge_padding,
-                appearance,
-            );
+            // The secondary icon sits at the BR of the primary at roughly badge
+            // proportions, with a small cutout ring separating it from the primary.
+            let primary_total = VERTICAL_TABS_ICON_SIZE;
+            let secondary_total = VERTICAL_TABS_ICON_SIZE * 0.5;
+            let ring_padding = secondary_total * 0.1;
+            let primary_icon =
+                render_summary_pane_kind_icon_circle(primary, primary_total, appearance);
+            let secondary_icon =
+                render_summary_pane_kind_icon_circle(secondary, secondary_total, appearance);
             let secondary_with_ring = Container::new(secondary_icon)
-                .with_uniform_padding(sizing.badge_padding)
+                .with_uniform_padding(ring_padding)
                 .with_background(theme.background())
                 .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
                 .finish();
 
+            // Same 45° placement as `render_with_optional_status_badge`: secondary's
+            // center sits on the primary circle's edge.
+            let primary_radius = primary_total / 2.;
+            let secondary_outer = secondary_total + ring_padding * 2.;
+            let secondary_radius = secondary_outer / 2.;
+            let secondary_corner_offset = primary_radius * std::f32::consts::FRAC_1_SQRT_2
+                + secondary_radius
+                - primary_total / 2.;
+
             let mut stack = Stack::new().with_child(
                 ConstrainedBox::new(primary_icon)
-                    .with_width(overall_size)
-                    .with_height(overall_size)
+                    .with_width(primary_total)
+                    .with_height(primary_total)
                     .finish(),
             );
             stack.add_positioned_child(
                 secondary_with_ring,
                 OffsetPositioning::offset_from_parent(
-                    vec2f(sizing.badge_offset.0, sizing.badge_offset.1),
-                    ParentOffsetBounds::ParentBySize,
+                    vec2f(secondary_corner_offset, secondary_corner_offset),
+                    ParentOffsetBounds::Unbounded,
                     ParentAnchor::BottomRight,
                     ChildAnchor::BottomRight,
                 ),
             );
             ConstrainedBox::new(stack.finish())
-                .with_width(overall_size)
-                .with_height(overall_size)
+                .with_width(primary_total)
+                .with_height(primary_total)
                 .finish()
         }
     }
 }
 
+// Inline rendering for non-agent summary kinds — for an icon (e.g. Terminal, Code,
+// Notebook) sized to fill its `total_size` bounding box.
+const SUMMARY_INLINE_ICON_RATIO: f32 = 2. / 3.;
+const SUMMARY_INLINE_PADDING_RATIO: f32 = (1. - SUMMARY_INLINE_ICON_RATIO) / 2.;
+
 fn render_summary_pane_kind_icon_circle(
     kind: SummaryPaneKind,
-    icon_size: f32,
-    padding: f32,
+    total_size: f32,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
     let theme = appearance.theme();
+    // For ambient Oz / CLI agent kinds, delegate to `render_icon_with_status` so the
+    // brand-color circle is overlaid with the white cloud badge (status-less in summary
+    // mode). Non-ambient agent kinds and all other pane kinds fall through to the inline
+    // circle rendering below.
+    if let Some(variant) = ambient_agent_variant(&kind) {
+        return render_icon_with_status(variant, total_size, 0., theme, theme.background());
+    }
+    let icon_size = total_size * SUMMARY_INLINE_ICON_RATIO;
+    let padding = total_size * SUMMARY_INLINE_PADDING_RATIO;
     let (icon_element, background): (Box<dyn Element>, ElementFill) = match kind {
-        SummaryPaneKind::OzAgent { is_ambient } => {
-            let icon = if is_ambient {
-                WarpIcon::OzCloud
-            } else {
-                WarpIcon::Oz
-            };
-            (
-                icon.to_warpui_icon(oz_icon_fill(theme)).finish(),
-                theme.background().into(),
-            )
-        }
-        SummaryPaneKind::CLIAgent { agent } => {
+        SummaryPaneKind::OzAgent { .. } => (
+            WarpIcon::Oz.to_warpui_icon(oz_icon_fill(theme)).finish(),
+            theme.background().into(),
+        ),
+        SummaryPaneKind::CLIAgent { agent, .. } => {
             let icon_color = agent.brand_icon_color();
-            let icon_element = render_cli_agent_logo(
-                agent,
-                WarpThemeFill::Solid(icon_color),
-                theme.sub_text_color(theme.background()),
-            );
+            let icon_element = agent
+                .icon()
+                .map(|icon| {
+                    icon.to_warpui_icon(WarpThemeFill::Solid(icon_color))
+                        .finish()
+                })
+                .unwrap_or_else(|| {
+                    WarpIcon::Terminal
+                        .to_warpui_icon(theme.sub_text_color(theme.background()))
+                        .finish()
+                });
             (
                 icon_element,
-                if matches!(agent, CLIAgent::DeepSeek) {
-                    theme.background().into()
-                } else {
-                    ThemeFill::Solid(
-                        agent
-                            .brand_color()
-                            .unwrap_or(ColorU::new(100, 100, 100, 255)),
-                    )
-                    .into()
-                },
+                ThemeFill::Solid(
+                    agent
+                        .brand_color()
+                        .unwrap_or(ColorU::new(100, 100, 100, 255)),
+                )
+                .into(),
             )
         }
         SummaryPaneKind::Code { title } => (
@@ -3806,6 +3748,27 @@ fn render_summary_pane_kind_icon_circle(
     .finish()
 }
 
+/// Maps an ambient Oz / CLI agent summary-pane kind to the `IconWithStatusVariant` used to
+/// render the brand-color circle with the white cloud badge. Non-ambient kinds (and all
+/// other pane kinds) return `None` so the caller falls back to its inline rendering.
+fn ambient_agent_variant(kind: &SummaryPaneKind) -> Option<IconWithStatusVariant> {
+    match kind {
+        SummaryPaneKind::OzAgent { is_ambient: true } => Some(IconWithStatusVariant::OzAgent {
+            status: None,
+            is_ambient: true,
+        }),
+        SummaryPaneKind::CLIAgent {
+            agent,
+            is_ambient: true,
+        } => Some(IconWithStatusVariant::CLIAgent {
+            agent: *agent,
+            status: None,
+            is_ambient: true,
+        }),
+        _ => None,
+    }
+}
+
 fn summary_pane_kind_icon(
     kind: SummaryPaneKind,
     appearance: &Appearance,
@@ -3819,15 +3782,8 @@ fn summary_pane_kind_icon(
 
     match kind {
         SummaryPaneKind::Terminal => (WarpIcon::Terminal, main_text),
-        SummaryPaneKind::OzAgent { is_ambient } => (
-            if is_ambient {
-                WarpIcon::OzCloud
-            } else {
-                WarpIcon::Oz
-            },
-            main_text,
-        ),
-        SummaryPaneKind::CLIAgent { agent } => (
+        SummaryPaneKind::OzAgent { .. } => (WarpIcon::Oz, main_text),
+        SummaryPaneKind::CLIAgent { agent, .. } => (
             agent.icon().unwrap_or(WarpIcon::Terminal),
             WarpThemeFill::Solid(agent.brand_icon_color()),
         ),
@@ -4384,33 +4340,33 @@ fn default_compact_subtitle(primary: VerticalTabsPrimaryInfo) -> VerticalTabsCom
     }
 }
 
-fn compact_subtitle_label(value: VerticalTabsCompactSubtitle) -> String {
-    match value {
-        VerticalTabsCompactSubtitle::Branch => crate::t!("vertical-tabs-setting-branch"),
-        VerticalTabsCompactSubtitle::WorkingDirectory => {
-            crate::t!("vertical-tabs-setting-working-directory")
-        }
-        VerticalTabsCompactSubtitle::Command => {
-            crate::t!("vertical-tabs-setting-command-conversation")
-        }
-    }
-}
-
 fn subtitle_options_for_primary(
     primary: VerticalTabsPrimaryInfo,
-) -> [VerticalTabsCompactSubtitle; 2] {
+) -> [(VerticalTabsCompactSubtitle, &'static str); 2] {
     match primary {
         VerticalTabsPrimaryInfo::Command => [
-            VerticalTabsCompactSubtitle::Branch,
-            VerticalTabsCompactSubtitle::WorkingDirectory,
+            (VerticalTabsCompactSubtitle::Branch, "Branch"),
+            (
+                VerticalTabsCompactSubtitle::WorkingDirectory,
+                "Working Directory",
+            ),
         ],
         VerticalTabsPrimaryInfo::WorkingDirectory => [
-            VerticalTabsCompactSubtitle::Branch,
-            VerticalTabsCompactSubtitle::Command,
+            (VerticalTabsCompactSubtitle::Branch, "Branch"),
+            (
+                VerticalTabsCompactSubtitle::Command,
+                "Command / Conversation",
+            ),
         ],
         VerticalTabsPrimaryInfo::Branch => [
-            VerticalTabsCompactSubtitle::Command,
-            VerticalTabsCompactSubtitle::WorkingDirectory,
+            (
+                VerticalTabsCompactSubtitle::Command,
+                "Command / Conversation",
+            ),
+            (
+                VerticalTabsCompactSubtitle::WorkingDirectory,
+                "Working Directory",
+            ),
         ],
     }
 }
@@ -4452,7 +4408,7 @@ pub(super) fn render_settings_popup(
     let sub_text = theme.sub_text_color(theme.background());
     let view_as_header = Container::new(
         Text::new_inline(
-            crate::t!("vertical-tabs-setting-view-as"),
+            "View as".to_string(),
             appearance.ui_font_family(),
             SETTINGS_POPUP_MENU_ITEM_FONT_SIZE,
         )
@@ -4471,7 +4427,7 @@ pub(super) fn render_settings_popup(
                 Expanded::new(
                     1.,
                     render_popup_text_segment(
-                        crate::t!("vertical-tabs-setting-panes"),
+                        "Panes",
                         matches!(current_granularity, VerticalTabsDisplayGranularity::Panes),
                         state.panes_segment_mouse_state.clone(),
                         VerticalTabsDisplayGranularity::Panes,
@@ -4485,7 +4441,7 @@ pub(super) fn render_settings_popup(
                 Expanded::new(
                     1.,
                     render_popup_text_segment(
-                        crate::t!("vertical-tabs-setting-tabs"),
+                        "Tabs",
                         matches!(current_granularity, VerticalTabsDisplayGranularity::Tabs),
                         state.tabs_segment_mouse_state.clone(),
                         VerticalTabsDisplayGranularity::Tabs,
@@ -4511,7 +4467,7 @@ pub(super) fn render_settings_popup(
 
     let tab_item_header = Container::new(
         Text::new_inline(
-            crate::t!("vertical-tabs-setting-tab-item"),
+            "Tab item".to_string(),
             appearance.ui_font_family(),
             SETTINGS_POPUP_MENU_ITEM_FONT_SIZE,
         )
@@ -4523,7 +4479,7 @@ pub(super) fn render_settings_popup(
     .finish();
 
     let focused_session_option = render_tab_item_mode_option(
-        crate::t!("vertical-tabs-setting-focused-session"),
+        "Focused session",
         matches!(
             current_tab_item_mode,
             VerticalTabsTabItemMode::FocusedSession
@@ -4536,7 +4492,7 @@ pub(super) fn render_settings_popup(
 
     let summary_option = if FeatureFlag::VerticalTabsSummaryMode.is_enabled() {
         Some(render_tab_item_mode_option(
-            crate::t!("vertical-tabs-setting-summary"),
+            "Summary",
             matches!(current_tab_item_mode, VerticalTabsTabItemMode::Summary),
             state.summary_option_mouse_state.clone(),
             VerticalTabsTabItemMode::Summary,
@@ -4549,7 +4505,7 @@ pub(super) fn render_settings_popup(
 
     let density_header = Container::new(
         Text::new_inline(
-            crate::t!("vertical-tabs-setting-density"),
+            "Density".to_string(),
             appearance.ui_font_family(),
             SETTINGS_POPUP_MENU_ITEM_FONT_SIZE,
         )
@@ -4626,7 +4582,7 @@ pub(super) fn render_settings_popup(
 
     let pane_title_header = Container::new(
         Text::new_inline(
-            crate::t!("vertical-tabs-setting-pane-title-as"),
+            "Pane title as".to_string(),
             appearance.ui_font_family(),
             SETTINGS_POPUP_MENU_ITEM_FONT_SIZE,
         )
@@ -4638,7 +4594,7 @@ pub(super) fn render_settings_popup(
     .finish();
 
     let command_option = render_primary_info_option(
-        crate::t!("vertical-tabs-setting-command-conversation"),
+        "Command / Conversation",
         matches!(current_primary_info, VerticalTabsPrimaryInfo::Command),
         state.command_option_mouse_state.clone(),
         VerticalTabsPrimaryInfo::Command,
@@ -4647,7 +4603,7 @@ pub(super) fn render_settings_popup(
     );
 
     let directory_option = render_primary_info_option(
-        crate::t!("vertical-tabs-setting-working-directory"),
+        "Working Directory",
         matches!(
             current_primary_info,
             VerticalTabsPrimaryInfo::WorkingDirectory
@@ -4659,7 +4615,7 @@ pub(super) fn render_settings_popup(
     );
 
     let branch_option = render_primary_info_option(
-        crate::t!("vertical-tabs-setting-branch"),
+        "Branch",
         matches!(current_primary_info, VerticalTabsPrimaryInfo::Branch),
         state.branch_option_mouse_state.clone(),
         VerticalTabsPrimaryInfo::Branch,
@@ -4697,7 +4653,7 @@ pub(super) fn render_settings_popup(
 
             let subtitle_header = Container::new(
                 Text::new_inline(
-                    crate::t!("vertical-tabs-setting-additional-metadata"),
+                    "Additional metadata".to_string(),
                     appearance.ui_font_family(),
                     SETTINGS_POPUP_MENU_ITEM_FONT_SIZE,
                 )
@@ -4714,9 +4670,9 @@ pub(super) fn render_settings_popup(
                 state.subtitle_option_1_mouse_state.clone(),
                 state.subtitle_option_2_mouse_state.clone(),
             ];
-            for (i, value) in options.iter().enumerate() {
+            for (i, (value, label)) in options.iter().enumerate() {
                 popup_col.add_child(render_compact_subtitle_option(
-                    compact_subtitle_label(*value),
+                    label,
                     current_subtitle == *value,
                     mouse_states[i].clone(),
                     *value,
@@ -4731,7 +4687,7 @@ pub(super) fn render_settings_popup(
 
             let show_header = Container::new(
                 Text::new_inline(
-                    crate::t!("vertical-tabs-setting-show"),
+                    "Show".to_string(),
                     appearance.ui_font_family(),
                     SETTINGS_POPUP_MENU_ITEM_FONT_SIZE,
                 )
@@ -4748,14 +4704,14 @@ pub(super) fn render_settings_popup(
             let pr_link_info_tooltip = if show_pr_link && pr_validation_suppressed {
                 Some(ShowToggleInfoTooltip {
                     mouse_state: state.show_pr_link_info_tooltip_mouse_state.clone(),
-                    tooltip_text: crate::t!("vertical-tabs-setting-pr-link-requires-gh"),
+                    tooltip_text: "Requires the GitHub CLI to be installed and authenticated",
                 })
             } else {
                 None
             };
 
             popup_col.add_child(render_show_toggle_option(
-                crate::t!("vertical-tabs-setting-pr-link"),
+                "PR link",
                 show_pr_link,
                 state.show_pr_link_mouse_state.clone(),
                 WorkspaceAction::ToggleVerticalTabsShowPrLink,
@@ -4764,7 +4720,7 @@ pub(super) fn render_settings_popup(
                 theme,
             ));
             popup_col.add_child(render_show_toggle_option(
-                crate::t!("vertical-tabs-setting-diff-stats"),
+                "Diff stats",
                 show_diff_stats,
                 state.show_diff_stats_mouse_state.clone(),
                 WorkspaceAction::ToggleVerticalTabsShowDiffStats,
@@ -4777,7 +4733,7 @@ pub(super) fn render_settings_popup(
     popup_col.add_child(make_divider(theme));
 
     popup_col.add_child(render_show_toggle_option(
-        crate::t!("vertical-tabs-setting-show-details-on-hover"),
+        "Show details on hover",
         show_details_on_hover,
         state.show_details_on_hover_mouse_state.clone(),
         WorkspaceAction::ToggleVerticalTabsShowDetailsOnHover,
@@ -4805,7 +4761,7 @@ pub(super) fn render_settings_popup(
 }
 
 fn render_compact_subtitle_option(
-    label: String,
+    label: &str,
     is_selected: bool,
     mouse_state: MouseStateHandle,
     value: VerticalTabsCompactSubtitle,
@@ -4816,6 +4772,7 @@ fn render_compact_subtitle_option(
     const FONT_SIZE: f32 = 12.;
     const GAP: f32 = 8.;
 
+    let label = label.to_string();
     let main_text = theme.main_text_color(theme.background());
     Hoverable::new(mouse_state, move |hover_state| {
         let check_icon: Box<dyn Element> = if is_selected {
@@ -4857,7 +4814,7 @@ fn render_compact_subtitle_option(
 }
 
 fn render_tab_item_mode_option(
-    label: String,
+    label: &str,
     is_selected: bool,
     mouse_state: MouseStateHandle,
     value: VerticalTabsTabItemMode,
@@ -4868,6 +4825,7 @@ fn render_tab_item_mode_option(
     const FONT_SIZE: f32 = 12.;
     const GAP: f32 = 8.;
 
+    let label = label.to_string();
     let main_text = theme.main_text_color(theme.background());
     Hoverable::new(mouse_state, move |hover_state| {
         let check_icon: Box<dyn Element> = if is_selected {
@@ -4909,7 +4867,7 @@ fn render_tab_item_mode_option(
 }
 
 fn render_primary_info_option(
-    label: String,
+    label: &str,
     is_selected: bool,
     mouse_state: MouseStateHandle,
     value: VerticalTabsPrimaryInfo,
@@ -4920,6 +4878,7 @@ fn render_primary_info_option(
     const FONT_SIZE: f32 = 12.;
     const GAP: f32 = 8.;
 
+    let label = label.to_string();
     let main_text = theme.main_text_color(theme.background());
     Hoverable::new(mouse_state, move |hover_state| {
         let check_icon: Box<dyn Element> = if is_selected {
@@ -4962,11 +4921,11 @@ fn render_primary_info_option(
 
 struct ShowToggleInfoTooltip {
     mouse_state: MouseStateHandle,
-    tooltip_text: String,
+    tooltip_text: &'static str,
 }
 
 fn render_show_toggle_option(
-    label: String,
+    label: &str,
     is_enabled: bool,
     mouse_state: MouseStateHandle,
     action: WorkspaceAction,
@@ -4980,6 +4939,7 @@ fn render_show_toggle_option(
     const INFO_ICON_SIZE: f32 = 12.;
     const INFO_GAP: f32 = 4.;
 
+    let label = label.to_string();
     let main_text = theme.main_text_color(theme.background());
     let info_color = theme.sub_text_color(theme.background());
     let ui_builder = appearance.ui_builder().clone();
@@ -5097,13 +5057,14 @@ fn render_popup_segment(
 }
 
 fn render_popup_text_segment(
-    label: String,
+    label: &str,
     is_selected: bool,
     mouse_state: MouseStateHandle,
     granularity: VerticalTabsDisplayGranularity,
     appearance: &Appearance,
     theme: &WarpTheme,
 ) -> Box<dyn Element> {
+    let label = label.to_string();
     let main_text = theme.main_text_color(theme.background());
     let sub_text = theme.sub_text_color(theme.background());
     Hoverable::new(mouse_state, move |hover_state| {
@@ -5453,7 +5414,7 @@ fn render_terminal_detail_section(
         preferred_agent_tab_titles(&agent_text, agent_tab_text_preference(app));
     let kind_label = terminal_kind_badge_label(agent_text.is_oz_agent, agent_text.cli_agent);
     let status = if let Some(session) =
-        cli_agent_session.filter(|s| s.listener.is_some() && session_supports_rich_status(s))
+        cli_agent_session.filter(|s| s.listener.is_some() && agent_supports_rich_status(&s.agent))
     {
         Some(session.status.to_conversation_status())
     } else if agent_text.is_oz_agent {

@@ -449,7 +449,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for BootstrappingMessageProducer {
         {
             None
         } else {
-            Some(Message::from_text(crate::t!("terminal-starting-shell")))
+            Some(Message::from_text("Starting shell..."))
         }
     }
 }
@@ -500,7 +500,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
             items.push(MessageItem::clickable(
                 vec![
                     MessageItem::keystroke(resume_keystroke),
-                    MessageItem::text(crate::t!("agent-message-bar-resume-conversation")),
+                    MessageItem::text("to resume conversation"),
                 ],
                 |ctx| {
                     ctx.dispatch_typed_action(TerminalAction::ResumeConversation);
@@ -529,7 +529,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
                         background_color: bg_color_override_for_shortcuts_and_commands,
                     },
                     MessageItem::Text {
-                        content: crate::t!("agent-message-bar-for-help").into(),
+                        content: "for help".into(),
                         color: color_override_for_shortcuts_and_commands,
                     },
                 ],
@@ -553,7 +553,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
                         background_color: bg_color_override_for_shortcuts_and_commands,
                     },
                     MessageItem::Text {
-                        content: crate::t!("agent-message-bar-for-commands").into(),
+                        content: "for commands".into(),
                         color: color_override_for_shortcuts_and_commands,
                     },
                 ],
@@ -584,7 +584,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
                 items.push(MessageItem::clickable(
                     vec![
                         MessageItem::keystroke(conversations_keystroke),
-                        MessageItem::text(crate::t!("agent-message-bar-open-conversation")),
+                        MessageItem::text("open conversation"),
                     ],
                     |ctx| {
                         ctx.dispatch_typed_action(InputAction::ToggleConversationsMenu);
@@ -605,7 +605,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
             items.push(MessageItem::clickable(
                 vec![
                     MessageItem::keystroke(code_review_keystroke),
-                    MessageItem::text(crate::t!("agent-message-bar-for-code-review")),
+                    MessageItem::text("for code review"),
                 ],
                 |ctx| {
                     ctx.dispatch_typed_action(WorkspaceAction::ToggleRightPanel);
@@ -631,11 +631,11 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
                         Keystroke::parse("cmdorctrl-alt-p").expect("keystroke should parse"),
                     ),
                     MessageItem::text(if is_plan_for_this_conversation_open {
-                        crate::t!("agent-message-bar-hide-plan")
+                        "to hide plan"
                     } else if plan_count > 1 {
-                        crate::t!("agent-message-bar-view-plans")
+                        "to view plans"
                     } else {
-                        crate::t!("agent-message-bar-view-plan")
+                        "to view plan"
                     }),
                 ],
                 |ctx| {
@@ -655,7 +655,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
             items.push(MessageItem::clickable(
                 vec![
                     MessageItem::keystroke(fork_keystroke),
-                    MessageItem::text(crate::t!("agent-message-bar-fork-continue")),
+                    MessageItem::text("to fork and continue"),
                 ],
                 |ctx| {
                     ctx.dispatch_typed_action(
@@ -734,10 +734,14 @@ impl MessageProvider<AgentMessageArgs<'_>> for ForkSlashCommandMessageProducer {
             return None;
         };
         let command_name = detected_command.command.name;
-        if command_name != commands::FORK.name
-            && command_name != commands::FORK_FROM.name
-            && command_name != commands::FORK_AND_COMPACT.name
-        {
+        let is_fork_family = command_name == commands::FORK.name
+            || command_name == commands::FORK_FROM.name
+            || command_name == commands::FORK_AND_COMPACT.name;
+        #[cfg(not(target_family = "wasm"))]
+        let is_continue_locally = command_name == commands::CONTINUE_LOCALLY.name;
+        #[cfg(target_family = "wasm")]
+        let is_continue_locally = false;
+        if !is_fork_family && !is_continue_locally {
             return None;
         }
         let modifier_keystroke = if cfg!(target_os = "macos") {
@@ -755,19 +759,14 @@ impl MessageProvider<AgentMessageArgs<'_>> for ForkSlashCommandMessageProducer {
             }
         };
 
-        // `/fork` opens in a new pane with Enter and a new tab with Cmd/Ctrl+Enter.
-        // Other fork-like commands open in the current pane with Enter and a new pane
-        // with Cmd/Ctrl+Enter.
-        let (primary_label, secondary_label) = if command_name == commands::FORK.name {
-            (
-                crate::t!("agent-message-bar-new-pane"),
-                crate::t!("agent-message-bar-new-tab"),
-            )
+        // `/fork` and `/continue-locally` open in a new pane with Enter and a new tab with
+        // Cmd/Ctrl+Enter. Other fork-like commands open in the current pane with Enter and a new
+        // pane with Cmd/Ctrl+Enter.
+        let primary_to_new_pane = command_name == commands::FORK.name || is_continue_locally;
+        let (primary_label, secondary_label) = if primary_to_new_pane {
+            (" new pane", " new tab")
         } else {
-            (
-                crate::t!("agent-message-bar-current-pane"),
-                crate::t!("agent-message-bar-new-pane"),
-            )
+            (" current pane", " new pane")
         };
 
         Some(Message::new(vec![
@@ -796,7 +795,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for HideShortcutsMessageProducer {
                     key: "?".to_owned(),
                     ..Default::default()
                 }),
-                MessageItem::text(crate::t!("agent-message-bar-hide-help")),
+                MessageItem::text("to hide help"),
             ],
             |ctx| {
                 ctx.dispatch_typed_action(InputAction::ToggleAgentViewShortcuts);
@@ -828,14 +827,12 @@ impl MessageProvider<AgentMessageArgs<'_>> for AutodetectedBashModeMessageProduc
 
         let message = match keybinding_name_to_keystroke(SET_INPUT_MODE_AGENT_ACTION_NAME, app) {
             Some(keystroke) => Message::new(vec![
-                MessageItem::text(crate::t!(
-                    "agent-message-bar-autodetected-shell-command-prefix"
-                )),
+                MessageItem::text("autodetected shell command, "),
                 MessageItem::keystroke(keystroke),
-                MessageItem::text(crate::t!("agent-message-bar-override")),
+                MessageItem::text(" to override"),
             ])
             .with_text_color(appearance.theme().ansi_fg_blue()),
-            None => Message::from_text(crate::t!("agent-message-bar-autodetected-shell-command")),
+            None => Message::from_text("autodetected shell command"),
         };
 
         Some(message)
@@ -884,7 +881,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for ExitBashModeMessageProducer {
                     color: keystroke_color_override,
                     background_color: keystroke_bg_color_override,
                 },
-                MessageItem::text(crate::t!("agent-message-bar-exit-shell-mode")),
+                MessageItem::text("to exit shell mode"),
             ])
             .with_text_color(text_color),
         )

@@ -13,6 +13,7 @@ use markdown_parser::parse_markdown;
 use pathfinder_color::ColorU;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+use warp_cli::agent::Harness;
 use warp_editor::content::{buffer::Buffer, markdown::MarkdownStyle};
 
 use warpui::{AppContext, SingletonEntity};
@@ -40,7 +41,7 @@ pub(crate) const GEMINI_BLUE: ColorU = ColorU {
 };
 
 /// OpenAI brand color (dark gray/black)
-const OPENAI_COLOR: ColorU = ColorU {
+pub(crate) const OPENAI_COLOR: ColorU = ColorU {
     r: 0,
     g: 0,
     b: 0,
@@ -104,13 +105,6 @@ const CURSOR_COLOR: ColorU = ColorU {
 };
 
 /// Goose brand color (#101010, from Block's official Goose logo)
-const DEEPSEEK_COLOR: ColorU = ColorU {
-    r: 53,
-    g: 120,
-    b: 229,
-    a: 255,
-};
-
 const GOOSE_COLOR: ColorU = ColorU {
     r: 16,
     g: 16,
@@ -132,7 +126,6 @@ pub enum CLIAgent {
     Auggie,
     CursorCli,
     Goose,
-    DeepSeek,
     /// Represents an unknown/custom CLI agent matched by user-configured regex patterns.
     Unknown,
 }
@@ -152,20 +145,8 @@ impl CLIAgent {
             CLIAgent::Auggie => "auggie",
             CLIAgent::CursorCli => "agent",
             CLIAgent::Goose => "goose",
-            CLIAgent::DeepSeek => "deepseek",
             CLIAgent::Unknown => "",
         }
-    }
-
-    fn command_prefix_aliases(&self) -> &'static [&'static str] {
-        match self {
-            CLIAgent::DeepSeek => &["deepseek-tui"],
-            _ => &[],
-        }
-    }
-
-    fn matches_command_prefix(&self, command: &str) -> bool {
-        command == self.command_prefix() || self.command_prefix_aliases().contains(&command)
     }
 
     /// Serialized version of the CLIAgent name (e.g. "Claude", "Gemini"). Used for the
@@ -182,6 +163,20 @@ impl CLIAgent {
         serde_json::from_value(name.into()).unwrap_or(CLIAgent::Unknown)
     }
 
+    /// Returns the [`CLIAgent`] corresponding to a cloud-agent [`Harness`] when it represents a
+    /// third-party agent. Returns `None` for [`Harness::Oz`] (Warp's built-in harness has no
+    /// distinct CLI agent identity).
+    pub fn from_harness(harness: Harness) -> Option<Self> {
+        match harness {
+            Harness::Oz => None,
+            Harness::Claude => Some(CLIAgent::Claude),
+            Harness::Gemini => Some(CLIAgent::Gemini),
+            Harness::OpenCode => Some(CLIAgent::OpenCode),
+            Harness::Codex => Some(CLIAgent::Codex),
+            Harness::Unknown => Some(CLIAgent::Unknown),
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             CLIAgent::Claude => "Claude Code",
@@ -195,7 +190,6 @@ impl CLIAgent {
             CLIAgent::Auggie => "Auggie",
             CLIAgent::CursorCli => "Cursor",
             CLIAgent::Goose => "Goose",
-            CLIAgent::DeepSeek => "DeepSeek",
             CLIAgent::Unknown => "CLI Agent",
         }
     }
@@ -214,7 +208,6 @@ impl CLIAgent {
             CLIAgent::Auggie => Some(Icon::AuggieLogo),
             CLIAgent::CursorCli => Some(Icon::CursorLogo),
             CLIAgent::Goose => Some(Icon::GooseLogo),
-            CLIAgent::DeepSeek => Some(Icon::DeepSeekLogo),
             CLIAgent::Unknown => None,
         }
     }
@@ -243,7 +236,6 @@ impl CLIAgent {
             CLIAgent::Auggie => &[SkillProvider::Agents],
             CLIAgent::CursorCli => &[SkillProvider::Agents],
             CLIAgent::Goose => &[SkillProvider::Agents],
-            CLIAgent::DeepSeek => &[SkillProvider::Agents],
             CLIAgent::Unknown => &[],
         }
     }
@@ -266,7 +258,7 @@ impl CLIAgent {
     pub fn supports_bash_mode(&self) -> bool {
         matches!(
             self,
-            CLIAgent::Claude | CLIAgent::Codex | CLIAgent::OpenCode | CLIAgent::DeepSeek
+            CLIAgent::Claude | CLIAgent::Codex | CLIAgent::OpenCode
         )
     }
 
@@ -284,7 +276,6 @@ impl CLIAgent {
             CLIAgent::Auggie => Some(AUGGIE_COLOR),
             CLIAgent::CursorCli => Some(CURSOR_COLOR),
             CLIAgent::Goose => Some(GOOSE_COLOR),
-            CLIAgent::DeepSeek => Some(DEEPSEEK_COLOR),
             CLIAgent::Unknown => None,
         }
     }
@@ -350,7 +341,7 @@ impl CLIAgent {
         enum_iterator::all::<CLIAgent>()
             .filter(|agent| !matches!(agent, CLIAgent::Unknown))
             .find(|agent| {
-                agent.matches_command_prefix(&resolved_first_word)
+                resolved_first_word == agent.command_prefix()
                     || (matches!(agent, CLIAgent::Claude)
                         && Self::is_aifx_agent_run_claude(&resolved_command, ctx))
             })
@@ -546,7 +537,6 @@ impl From<CLIAgent> for CLIAgentType {
             CLIAgent::Auggie => CLIAgentType::Auggie,
             CLIAgent::CursorCli => CLIAgentType::Cursor,
             CLIAgent::Goose => CLIAgentType::Goose,
-            CLIAgent::DeepSeek => CLIAgentType::DeepSeek,
             CLIAgent::Unknown => CLIAgentType::Unknown,
         }
     }

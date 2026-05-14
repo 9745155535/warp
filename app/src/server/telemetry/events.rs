@@ -32,6 +32,7 @@ use crate::ai::agent::SuggestedLoggingId;
 use crate::ai::agent_management::notifications::NotificationSourceAgent;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
+use crate::ai::blocklist::AIBlockResponseRating;
 use crate::ai::blocklist::CommandExecutionPermissionAllowedReason;
 use crate::ai::blocklist::InputType;
 use crate::ai::mcp::TemplateVariable;
@@ -91,12 +92,7 @@ use crate::terminal::view::PromptPart;
 use crate::terminal::view::{
     NotificationsDiscoveryBannerAction, NotificationsErrorBannerAction, NotificationsTrigger,
 };
-// OpenWarp:share_block_modal 已删,本地 stub 仅为保持 telemetry 枚举可编译,运行时永不触发
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub enum ShareBlockType {
-    Single,
-    All,
-}
+use crate::terminal::ShareBlockType;
 use crate::tips::WelcomeTipFeature;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::settings::EditorLayout;
@@ -504,7 +500,6 @@ pub enum CLIAgentType {
     Auggie,
     Cursor,
     Goose,
-    DeepSeek,
     Unknown,
 }
 
@@ -529,8 +524,8 @@ pub enum NotificationAgentVariant {
 impl From<NotificationSourceAgent> for NotificationAgentVariant {
     fn from(agent: NotificationSourceAgent) -> Self {
         match agent {
-            NotificationSourceAgent::Oz => Self::Oz,
-            NotificationSourceAgent::CLI(cli_agent) => Self::CLIAgent(cli_agent.into()),
+            NotificationSourceAgent::Oz { .. } => Self::Oz,
+            NotificationSourceAgent::CLI { agent, .. } => Self::CLIAgent(agent.into()),
         }
     }
 }
@@ -1135,6 +1130,7 @@ pub enum TelemetryAgentViewEntryOrigin {
     ChildAgent,
     LinearDeepLink,
     ThirdPartyCloudAgent,
+    OrchestrationPillBar,
 }
 
 impl From<AgentViewEntryOrigin> for TelemetryAgentViewEntryOrigin {
@@ -1184,6 +1180,7 @@ impl From<AgentViewEntryOrigin> for TelemetryAgentViewEntryOrigin {
             AgentViewEntryOrigin::DefaultSessionMode => Self::DefaultSessionMode,
             AgentViewEntryOrigin::ChildAgent => Self::ChildAgent,
             AgentViewEntryOrigin::LinearDeepLink => Self::LinearDeepLink,
+            AgentViewEntryOrigin::OrchestrationPillBar => Self::OrchestrationPillBar,
         }
     }
 }
@@ -1919,6 +1916,15 @@ pub enum TelemetryEvent {
 
         /// Whether or not Universal Developer Input mode is enabled
         is_udi_enabled: bool,
+    },
+    /// Rated a blocklist AI response via thumbs up/down.
+    AgentModeRatedResponse {
+        /// The server-generated ID for the output corresponding to this rating.
+        server_output_id: Option<ServerOutputId>,
+
+        /// The ID of the conversation to which the rated output belongs.
+        conversation_id: AIConversationId,
+        rating: AIBlockResponseRating,
     },
     /// The user tried to send an Agent Mode query but they have already reached their AI request
     /// limit. Note that this limit is for all AI requests, not Agent Mode alone.
@@ -3863,6 +3869,15 @@ impl TelemetryEvent {
                 "num_images": num_images,
                 "is_udi_enabled": is_udi_enabled,
             })),
+            TelemetryEvent::AgentModeRatedResponse {
+                server_output_id,
+                conversation_id,
+                rating,
+            } => Some(json!({
+                "server_output_id": server_output_id,
+                "conversation_id": conversation_id,
+                "rating": rating,
+            })),
             TelemetryEvent::ExecutedWarpDrivePrompt {
                 id,
                 selection_source,
@@ -4904,6 +4919,7 @@ impl TelemetryEvent {
             | TelemetryEvent::SshRemoteServerChoiceDoNotAskAgainToggled { .. }
             | TelemetryEvent::SettingsImportInitiated
             | TelemetryEvent::AgentModeCreatedAIBlock { .. }
+            | TelemetryEvent::AgentModeRatedResponse { .. }
             | TelemetryEvent::StaticPromptSuggestionsBannerShown { .. }
             | TelemetryEvent::StaticPromptSuggestionAccepted { .. }
             | TelemetryEvent::AISuggestedRuleAdded { .. }
@@ -5472,6 +5488,9 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             | Self::AutoupdateForcekillFailed => EnablementState::Always,
             Self::ToggleCodebaseContext => EnablementState::Always,
             Self::ToggleAutoIndexing => EnablementState::Always,
+            Self::AgentModeRatedResponse => {
+                EnablementState::Flag(FeatureFlag::GlobalAIAnalyticsBanner)
+            }
             Self::ExecutedWarpDrivePrompt => EnablementState::Flag(FeatureFlag::AgentModeWorkflows),
             Self::ImageReceived => EnablementState::Always,
             Self::FileExceededContextLimit => EnablementState::Always,
@@ -6001,6 +6020,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             Self::ToggleAutoIndexing => "Toggle Codebase Context Autoindexing",
             Self::ActiveIndexedReposChanged => "Active Indexed Repos Changed",
             Self::AttachedImagesToAgentModeQuery => "AgentMode.AttachedImages",
+            Self::AgentModeRatedResponse => "AgentMode.RatedResponse",
             Self::ExecutedWarpDrivePrompt => "AgentMode.ExecutedWarpDrivePrompt",
             Self::ImageReceived => "Image Received",
             Self::FileExceededContextLimit => "AgentMode.Code.FileExceededContextLimit",
@@ -6530,6 +6550,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             Self::RemoveDenylistedSshTmuxWrapperHost => {
                 "Removed an SSH host from the denylist from prompting for Tmux Wrapper"
             }
+            Self::AgentModeRatedResponse => "User rated an Agent Mode response",
             Self::SshInteractiveSessionDetected => "An interactive SSH session was detected",
             Self::SshTmuxWarpifyBlockAccepted => "User accepted an ssh tmux warpify block",
             Self::SshTmuxWarpifyBlockDismissed => "User dismissed an ssh tmux warpify block",

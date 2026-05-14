@@ -7,6 +7,10 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::ai::agent::api::convert_conversation::{
+    convert_conversation_data_to_ai_conversation, RestorationMode,
+};
+use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_sdk::driver::harness::{harness_kind, HarnessKind};
 use crate::ai::agent_sdk::driver::{AgentDriverOptions, AgentRunPrompt, Task};
@@ -53,6 +57,7 @@ use crate::{
         ids::{ServerId, SyncId},
         server_api::{ai::AgentConfigSnapshot, ServerApiProvider},
     },
+    terminal::view::ConversationRestorationInNewPaneType,
 };
 use driver::AgentDriverError;
 use warp_graphql::object_permissions::OwnerType;
@@ -240,7 +245,7 @@ fn run_agent(
             if args.environment.is_some() && !FeatureFlag::CloudEnvironments.is_enabled() {
                 return Err(anyhow::anyhow!("unexpected argument '--environment' found"));
             }
-            if args.conversation.is_some() {
+            if args.conversation.is_some() && !FeatureFlag::CloudConversations.is_enabled() {
                 return Err(anyhow::anyhow!(
                     "unexpected argument '--conversation' found"
                 ));
@@ -287,7 +292,7 @@ fn run_agent(
             {
                 return Err(anyhow::anyhow!("unexpected argument '--environment' found"));
             }
-            if args.conversation.is_some() {
+            if args.conversation.is_some() && !FeatureFlag::CloudConversations.is_enabled() {
                 return Err(anyhow::anyhow!(
                     "unexpected argument '--conversation' found"
                 ));
@@ -461,6 +466,24 @@ fn build_server_side_task(
     Ok((config, task))
 }
 
+fn reconcile_task_harness(
+    task_id: &str,
+    selected_harness: &mut Harness,
+    task_harness: Harness,
+) -> Result<HarnessKind, AgentDriverError> {
+    if *selected_harness == Harness::Oz {
+        *selected_harness = task_harness;
+    } else if task_harness != *selected_harness {
+        return Err(AgentDriverError::TaskHarnessMismatch {
+            task_id: task_id.to_string(),
+            expected: task_harness.to_string(),
+            got: selected_harness.to_string(),
+        });
+    }
+
+    harness_kind(*selected_harness)
+}
+
 /// Resolve a `Prompt` to a plain string.
 fn resolve_prompt(prompt: &Prompt, ctx: &AppContext) -> Result<String, AgentDriverError> {
     match prompt {
@@ -565,21 +588,23 @@ impl AgentDriverRunner {
             // Pull relevant variables out of args before moving it into the closure.
             let share_requests = args.share.share.clone();
             let bedrock_inference_role = args.bedrock_inference_role.clone();
+            let has_task_id = args.task_id.is_some();
             let args_harness = args.harness;
-
             // `--conversation` path (user-invoked local resume): validate before any task side
             // effects so mismatches fail fast. The `--task-id` path derives its conversation id
             // from the server-side task metadata inside `build_driver_options_and_task`. Both
             // can currently be passed together (the worker server-side appends `--conversation`
             // alongside `--task-id` for Slack/Linear followups); when both are set, the explicit
             // `--conversation` value wins via the merge below.
-            if let Some(conversation_id) = args.conversation.as_deref() {
-                common::fetch_and_validate_conversation_harness(
-                    server_api.clone(),
-                    conversation_id,
-                    args_harness,
-                )
-                .await?;
+            if !has_task_id {
+                if let Some(conversation_id) = args.conversation.as_deref() {
+                    common::fetch_and_validate_conversation_harness(
+                        server_api.clone(),
+                        conversation_id,
+                        args_harness,
+                    )
+                    .await?;
+                }
             }
             let resume_conversation_id = args.conversation.clone();
 
@@ -842,7 +867,6 @@ impl AgentDriverRunner {
             .await?;
             None
         };
-
         // Resolve environment and cloud providers.
         Self::resolve_environment(foreground, environment_id, &mut driver_options).await?;
 
@@ -1050,13 +1074,11 @@ impl AgentDriverRunner {
         // task is linked to an existing conversation, since task harness and conversation harness
         // always match (the task spawned the conversation).
         if let Some(task_harness) = task_harness {
-            if task_harness != driver_options.selected_harness {
-                return Err(AgentDriverError::TaskHarnessMismatch {
-                    task_id: task_id_str,
-                    expected: task_harness.to_string(),
-                    got: driver_options.selected_harness.to_string(),
-                });
-            }
+            task.harness = reconcile_task_harness(
+                &task_id_str,
+                &mut driver_options.selected_harness,
+                task_harness,
+            )?;
         }
 
         // Set the task ID on the ServerApi so it's sent with all subsequent requests.
@@ -1104,11 +1126,37 @@ impl AgentDriverRunner {
     ) -> Result<Option<driver::ResumeOptions>, AgentDriverError> {
         match harness {
             HarnessKind::Oz => {
-                // CloudConversations was removed in OpenWarp; we can no longer
-                // resume an Oz conversation from a server-stored token.
-                Err(AgentDriverError::ConversationLoadFailed(format!(
-                    "Conversation {conversation_id} cannot be resumed: cloud conversations are disabled in OpenWarp"
-                )))
+                let server_api = foreground
+                    .spawn(|_, ctx| {
+                        ServerApiProvider::handle(ctx)
+                            .as_ref(ctx)
+                            .get_ai_client()
+                            .clone()
+                    })
+                    .await?;
+                let token = ServerConversationToken::new(conversation_id.clone());
+                let (conversation_data, metadata) = server_api
+                    .get_ai_conversation(token)
+                    .await
+                    .map_err(|err| AgentDriverError::ConversationLoadFailed(format!("{err}")))?;
+                let conversation = convert_conversation_data_to_ai_conversation(
+                    AIConversationId::default(),
+                    &conversation_data,
+                    metadata,
+                    RestorationMode::Continue,
+                )
+                .ok_or_else(|| {
+                    AgentDriverError::ConversationLoadFailed(
+                        "Failed to convert conversation data to AIConversation".into(),
+                    )
+                })?;
+                Ok(Some(driver::ResumeOptions::Oz(Box::new(
+                    ConversationRestorationInNewPaneType::Historical {
+                        conversation,
+                        should_use_live_appearance: false,
+                        ambient_agent_task_id: None,
+                    },
+                ))))
             }
             HarnessKind::ThirdParty(h) => {
                 let harness_support_client = foreground
@@ -1357,6 +1405,7 @@ fn resolve_orchestration_harness_label() -> &'static str {
         Some(Harness::Claude) => "claude",
         Some(Harness::OpenCode) => "opencode",
         Some(Harness::Gemini) => "gemini",
+        Some(Harness::Codex) => "codex",
         Some(Harness::Unknown) | None => "unknown",
     }
 }

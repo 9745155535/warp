@@ -4,20 +4,20 @@ Version=1.0
 
 Type=Application
 
-Name=OpenWarp
+Name=WarpOss
 GenericName=TerminalEmulator
 
 Exec=warp-terminal-oss %U
-StartupWMClass=dev.warp.OpenWarp
+StartupWMClass=dev.warp.WarpOss
 
 Keywords=shell;prompt;command;commandline;cmd;
 
-Icon=dev.warp.OpenWarp
+Icon=dev.warp.WarpOss
 
 Categories=System;TerminalEmulator;
 
 # Don't run this application within a terminal.
 Terminal=false
 
-# Register ourselves as the handler for openwarp:// URLs.
-MimeType=x-scheme-handler/openwarp;
+# Register ourselves as the handler for warposs:// URLs.
+MimeType=x-scheme-handler/warposs;

@@ -280,7 +280,6 @@ pub enum Icon {
     AuggieLogo,
     CursorLogo,
     GooseLogo,
-    DeepSeekLogo,
     NLD,
     Oz,
     OzCloud,
@@ -311,7 +310,6 @@ pub enum Icon {
     SwitchHorizontal01,
     HeartHand,
     MessageChatSquare,
-    Server01,
 }
 
 impl From<Icon> for &'static str {
@@ -590,7 +588,6 @@ impl From<Icon> for &'static str {
             Icon::AuggieLogo => "bundled/svg/auggie.svg",
             Icon::CursorLogo => "bundled/svg/cursor.svg",
             Icon::GooseLogo => "bundled/svg/goose.svg",
-            Icon::DeepSeekLogo => "bundled/svg/deepseek.svg",
             Icon::NLD => "bundled/svg/nld.svg",
             Icon::Oz => "bundled/svg/oz.svg",
             Icon::OzCloud => "bundled/svg/oz-cloud.svg",
@@ -620,7 +617,6 @@ impl From<Icon> for &'static str {
             Icon::ClockPlus => "bundled/svg/clock-plus.svg",
             Icon::HeartHand => "bundled/svg/heart-hand.svg",
             Icon::MessageChatSquare => "bundled/svg/message-chat-square.svg",
-            Icon::Server01 => "bundled/svg/server-01.svg",
         }
     }
 }

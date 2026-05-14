@@ -206,9 +206,6 @@ impl BlocklistAIPermissions {
             coding_model: profile_data.coding_model.clone(),
             cli_agent_model: profile_data.cli_agent_model.clone(),
             computer_use_model: profile_data.computer_use_model.clone(),
-            title_model: profile_data.title_model.clone(),
-            active_ai_model: profile_data.active_ai_model.clone(),
-            next_command_model: profile_data.next_command_model.clone(),
             context_window_limit: profile_data.context_window_limit,
             autosync_plans_to_warp_drive: profile_data.autosync_plans_to_warp_drive,
             web_search_enabled: profile_data.web_search_enabled,
@@ -401,18 +398,35 @@ impl BlocklistAIPermissions {
         profile_id: ClientProfileId,
     ) -> Vec<AgentModeCommandExecutionPredicate> {
         let autonomy_settings = Self::workspace_autonomy_settings(ctx);
+        let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
+        let user_denylist = profiles_model
+            .get_profile_by_id(profile_id, ctx)
+            .unwrap_or_else(|| profiles_model.default_profile(ctx))
+            .data()
+            .command_denylist
+            .clone();
 
+        match autonomy_settings.execute_commands_denylist {
+            Some(org_denylist) => {
+                let mut merged = org_denylist;
+                for item in user_denylist {
+                    if !merged.contains(&item) {
+                        merged.push(item);
+                    }
+                }
+                merged
+            }
+            None => user_denylist,
+        }
+    }
+
+    pub fn get_org_execute_commands_denylist(
+        ctx: &AppContext,
+    ) -> Vec<AgentModeCommandExecutionPredicate> {
+        let autonomy_settings = Self::workspace_autonomy_settings(ctx);
         autonomy_settings
             .execute_commands_denylist
-            .unwrap_or_else(|| {
-                let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
-                profiles_model
-                    .get_profile_by_id(profile_id, ctx)
-                    .unwrap_or_else(|| profiles_model.default_profile(ctx))
-                    .data()
-                    .command_denylist
-                    .clone()
-            })
+            .unwrap_or_default()
     }
 
     /// Returns a denylist of command regexes that AM should not auto-execute.
@@ -1152,15 +1166,13 @@ impl BlocklistAIPermissions {
         terminal_view_id: Option<EntityId>,
         ctx: &AppContext,
     ) -> bool {
-        // openWarp 改:auto-approve(ctrl+shift+i)只对 shell/编辑等执行类工具自动通过,
-        // ask_user_question 永远要求弹给用户,避免模型问问题被静默吞掉。
-        // 仅显式选 `Never` 才跳过。
-        let _ = conversation_id;
         match self.get_ask_user_question_setting(ctx, terminal_view_id) {
             AskUserQuestionPermission::Never => false,
             AskUserQuestionPermission::AskExceptInAutoApprove
-            | AskUserQuestionPermission::Unknown
-            | AskUserQuestionPermission::AlwaysAsk => true,
+            | AskUserQuestionPermission::Unknown => !BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(conversation_id)
+                .is_some_and(|convo| convo.autoexecute_any_action()),
+            AskUserQuestionPermission::AlwaysAsk => true,
         }
     }
 }

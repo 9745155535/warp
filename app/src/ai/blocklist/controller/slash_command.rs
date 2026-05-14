@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, ModelContext, SingletonEntity};
@@ -6,8 +6,8 @@ use warpui::{AppContext, ModelContext, SingletonEntity};
 use crate::{
     ai::{
         agent::{
-            conversation::AIConversationId, AIAgentAttachment, AIAgentContext, AIAgentInput,
-            CloneRepositoryURL, EntrypointType, RequestMetadata, UserQueryMode,
+            conversation::AIConversationId, AIAgentContext, AIAgentInput, CancellationReason,
+            CloneRepositoryURL, EntrypointType, RequestMetadata,
         },
         blocklist::agent_view::AgentViewEntryOrigin,
     },
@@ -28,20 +28,13 @@ pub enum SlashCommandRequest {
     CloneRepository {
         url: String,
     },
-    InitProjectRules {
-        arguments: Option<String>,
-    },
+    InitProjectRules,
     CreateEnvironment {
         repos: Vec<String>,
         use_current_dir: bool,
     },
     Summarize {
         prompt: Option<String>,
-        /// OpenWarp BYOP 本地会话压缩:本次摘要是否由 token-overflow 自动触发。
-        /// chat_stream::SummarizeConversation 分支据此决定 follow-up 文案
-        /// (overflow 路径会拼一段 "previous request exceeded ..." 解释)。
-        /// /compact /compact-and 手动触发时为 false;auto-trigger 路径为 true。
-        overflow: bool,
     },
     FetchReviewComments {
         repo_path: String,
@@ -57,23 +50,15 @@ impl SlashCommandRequest {
     /// Parses user input into a SlashCommandRequest for slash commands that are handled
     /// via the AI query flow (as opposed to action-based slash commands handled in input.rs).
     pub fn from_query(query: &str) -> Option<SlashCommandRequest> {
-        if query == commands::INIT_NAME {
-            return Some(Self::InitProjectRules { arguments: None });
-        }
-        if let Some(arguments) = query
-            .strip_prefix(commands::INIT_NAME)
-            .and_then(|query| query.strip_prefix(' '))
-        {
-            return Some(Self::InitProjectRules {
-                arguments: Some(arguments.to_string()),
-            });
+        // Check if this is an exact /init query and route it to InitProjectRules instead
+        if query == "/init" {
+            return Some(Self::InitProjectRules);
         }
 
         // Check if query starts with /compact and route to summarize conversation
         if let Some(prompt) = query.strip_prefix(commands::COMPACT.name) {
             return Some(Self::Summarize {
                 prompt: prompt.strip_prefix(' ').map(String::from),
-                overflow: false, // 文本输入路径只用于手动 /compact,永不为自动 overflow
             });
         }
 
@@ -105,6 +90,8 @@ impl SlashCommandRequest {
         if inputs.is_empty() {
             return;
         }
+        let active_conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
+            .active_conversation_id(controller.terminal_view_id);
 
         // If no existing conversation, create a new one.
         // When AgentView is enabled, enter agent view which creates the conversation
@@ -128,6 +115,18 @@ impl SlashCommandRequest {
             log::error!("Failed to get conversation ID for slash command request");
             return;
         };
+
+        let cancellation_reason = CancellationReason::FollowUpSubmitted {
+            is_for_same_conversation: active_conversation_id
+                .is_some_and(|id| id == conversation_id),
+        };
+        if let Some(active_conversation_id) = active_conversation_id {
+            controller.cancel_conversation_progress(
+                active_conversation_id,
+                cancellation_reason,
+                ctx,
+            );
+        }
 
         let Some(conversation) =
             BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
@@ -216,16 +215,9 @@ impl SlashCommandRequest {
                     context,
                 }]
             }
-            SlashCommandRequest::InitProjectRules { arguments } => vec![AIAgentInput::UserQuery {
-                query: crate::ai::agent_providers::prompt_renderer::render_init_project_command(
-                    arguments.as_deref(),
-                ),
+            SlashCommandRequest::InitProjectRules => vec![AIAgentInput::InitProjectRules {
                 context,
-                static_query_type: None,
-                referenced_attachments: HashMap::<String, AIAgentAttachment>::new(),
-                user_query_mode: UserQueryMode::Normal,
-                running_command: None,
-                intended_agent: None,
+                display_query: Some("/init".to_string()),
             }],
             SlashCommandRequest::CreateEnvironment {
                 mut repos,
@@ -248,8 +240,8 @@ impl SlashCommandRequest {
                     repo_paths: repos,
                 }]
             }
-            SlashCommandRequest::Summarize { prompt, overflow } => {
-                vec![AIAgentInput::SummarizeConversation { prompt, overflow }]
+            SlashCommandRequest::Summarize { prompt, .. } => {
+                vec![AIAgentInput::SummarizeConversation { prompt }]
             }
             SlashCommandRequest::FetchReviewComments { repo_path } => {
                 vec![AIAgentInput::FetchReviewComments { repo_path, context }]
@@ -282,7 +274,7 @@ impl SlashCommandRequest {
     fn entrypoint(&self) -> EntrypointType {
         match self {
             SlashCommandRequest::CloneRepository { .. } => EntrypointType::CloneRepository,
-            SlashCommandRequest::InitProjectRules { .. } => EntrypointType::InitProjectRules,
+            SlashCommandRequest::InitProjectRules => EntrypointType::InitProjectRules,
             SlashCommandRequest::CreateNewProject { .. }
             | SlashCommandRequest::CreateEnvironment { .. }
             | SlashCommandRequest::Summarize { .. }

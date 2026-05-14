@@ -1445,6 +1445,11 @@ impl UserWorkspaces {
         AISettings::as_ref(app).is_any_ai_enabled(app)
     }
 
+    pub fn default_host_slug(&self) -> Option<&str> {
+        self.current_team()
+            .and_then(|team| team.organization_settings.default_host_slug.as_deref())
+    }
+
     /// Returns the team-level agent attribution setting.
     ///
     /// Use this to decide whether the user's attribution toggle should be locked

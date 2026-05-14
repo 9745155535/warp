@@ -7,8 +7,10 @@ use crate::view_components::{Dropdown, SubmittableTextInput};
 use crate::Appearance;
 use crate::TemplatableMCPServerManager;
 use pathfinder_geometry::vector::vec2f;
+use thousands::Separable;
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
+use warpui::elements::Dismiss;
 use warpui::elements::Hoverable;
 use warpui::elements::MouseStateHandle;
 use warpui::elements::{
@@ -17,18 +19,56 @@ use warpui::elements::{
     Stack, Text,
 };
 use warpui::fonts::{Properties, Weight};
-use warpui::ui_components::components::UiComponent;
+use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::AppContext;
 use warpui::{Element, SingletonEntity, ViewHandle};
 
 use super::ExecutionProfileEditorView;
 use super::ExecutionProfileEditorViewAction;
 
+const CONTEXT_WINDOW_SLIDER_WIDTH: f32 = 220.;
+const CONTEXT_WINDOW_INPUT_BOX_WIDTH: f32 = 120.;
+
+pub(super) fn context_window_snap_values(min: u32, max: u32) -> Vec<f32> {
+    if min >= max {
+        return vec![min as f32];
+    }
+    let range = (max - min) as f64;
+    let step = nice_step(range / 8.0);
+
+    let mut values = vec![min as f32];
+    let mut v = (min as f64 / step).ceil() * step;
+    while v < max as f64 {
+        if v > min as f64 {
+            values.push(v as f32);
+        }
+        v += step;
+    }
+    if values.last().copied() != Some(max as f32) {
+        values.push(max as f32);
+    }
+    values
+}
+
+fn nice_step(raw: f64) -> f64 {
+    let magnitude = 10f64.powf(raw.log10().floor());
+    let normalized = raw / magnitude;
+    let nice = if normalized < 1.5 {
+        1.0
+    } else if normalized < 3.5 {
+        2.5
+    } else if normalized < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * magnitude
+}
+
 use crate::settings_view::{render_input_list, render_separator, InputListItem};
 
-pub fn workspace_override_tooltip_message() -> String {
-    crate::t!("settings-exec-profile-editor-workspace-override-tooltip")
-}
+pub const WORKSPACE_OVERRIDE_TOOLTIP_MESSAGE: &str =
+    "This option is enforced by your organization's settings and cannot be customized.";
 pub fn render_header_section(
     appearance: &Appearance,
     profile_name_editor: &ViewHandle<EditorView>,
@@ -52,7 +92,7 @@ pub fn render_header_section(
 
     if is_default_profile {
         column.add_child(render_info_section(
-            &crate::t!("settings-exec-profile-editor-default-name-info"),
+            "Default profile name cannot be changed.",
             None,
             appearance,
         ));
@@ -64,25 +104,17 @@ pub fn render_header_section(
 }
 
 fn render_header_title(appearance: &Appearance) -> Box<dyn Element> {
-    Text::new_inline(
-        crate::t!("settings-exec-profile-editor-title"),
-        appearance.ui_font_family(),
-        16.,
-    )
-    .with_style(Properties::default().weight(Weight::Bold))
-    .with_color(appearance.theme().active_ui_text_color().into())
-    .finish()
+    Text::new_inline("Edit Profile", appearance.ui_font_family(), 16.)
+        .with_style(Properties::default().weight(Weight::Bold))
+        .with_color(appearance.theme().active_ui_text_color().into())
+        .finish()
 }
 
 fn render_header_name_label(appearance: &Appearance) -> Box<dyn Element> {
     Container::new(
-        Text::new(
-            crate::t!("settings-exec-profile-editor-name-label"),
-            appearance.ui_font_family(),
-            13.,
-        )
-        .with_color(appearance.theme().active_ui_text_color().into())
-        .finish(),
+        Text::new("Name", appearance.ui_font_family(), 13.)
+            .with_color(appearance.theme().active_ui_text_color().into())
+            .finish(),
     )
     .with_margin_top(16.)
     .finish()
@@ -221,60 +253,34 @@ fn render_permission_row<T: Clone + 'static + std::fmt::Debug + Send + Sync>(
 pub fn render_models_section(
     appearance: &Appearance,
     view: &ExecutionProfileEditorView,
+    app: &AppContext,
 ) -> Box<dyn Element> {
-    let section_label = crate::t!("settings-exec-profile-editor-section-models");
-    let base_label = crate::t!("settings-exec-profile-editor-base-model");
-    let base_desc = crate::t!("settings-exec-profile-editor-base-model-desc");
-    let full_term_label = crate::t!("settings-exec-profile-editor-full-terminal-use-model");
-    let full_term_desc = crate::t!("settings-exec-profile-editor-full-terminal-use-model-desc");
-    let title_label = crate::t!("settings-exec-profile-editor-title-model");
-    let title_desc = crate::t!("settings-exec-profile-editor-title-model-desc");
-    let active_label = crate::t!("settings-exec-profile-editor-active-ai-model");
-    let active_desc = crate::t!("settings-exec-profile-editor-active-ai-model-desc");
-    let next_label = crate::t!("settings-exec-profile-editor-next-command-model");
-    let next_desc = crate::t!("settings-exec-profile-editor-next-command-model-desc");
-
     let mut column = Flex::column()
         .with_child(render_separator(appearance))
-        .with_child(render_section_label(&section_label, appearance))
+        .with_child(render_section_label("MODELS", appearance))
         .with_child(render_filterable_dropdown_row(
             appearance,
-            &base_label,
-            &base_desc,
+            "Base model",
+            "This model serves as the primary engine behind the agent. It powers most interactions and invokes other models for tasks like planning or code generation when necessary. Warp may automatically switch to alternate models based on model availability or for auxiliary tasks such as conversation summarization.",
             &view.base_model_dropdown,
-        ))
-        .with_child(render_filterable_dropdown_row(
-            appearance,
-            &full_term_label,
-            &full_term_desc,
-            &view.full_terminal_use_model_dropdown,
-        ))
-        .with_child(render_filterable_dropdown_row(
-            appearance,
-            &title_label,
-            &title_desc,
-            &view.title_model_dropdown,
-        ))
-        .with_child(render_filterable_dropdown_row(
-            appearance,
-            &active_label,
-            &active_desc,
-            &view.active_ai_model_dropdown,
-        ))
-        .with_child(render_filterable_dropdown_row(
-            appearance,
-            &next_label,
-            &next_desc,
-            &view.next_command_model_dropdown,
         ));
 
+    if let Some(row) = render_context_window_row(appearance, view, app) {
+        column.add_child(row);
+    }
+
+    column = column.with_child(render_filterable_dropdown_row(
+        appearance,
+        "Full terminal use model",
+        "The model used when the agent operates inside interactive terminal applications like database shells, debuggers, REPLs, or dev servers—reading live output and writing commands to the PTY.",
+        &view.full_terminal_use_model_dropdown,
+    ));
+
     if FeatureFlag::LocalComputerUse.is_enabled() {
-        let cu_label = crate::t!("settings-exec-profile-editor-computer-use-model");
-        let cu_desc = crate::t!("settings-exec-profile-editor-computer-use-model-desc");
         column.add_child(render_filterable_dropdown_row(
             appearance,
-            &cu_label,
-            &cu_desc,
+            "Computer use model",
+            "The model used when the agent takes control of your computer to interact with graphical applications through mouse movements, clicks, and keyboard input.",
             &view.computer_use_model_dropdown,
         ));
     }
@@ -284,6 +290,149 @@ pub fn render_models_section(
         .finish()
 }
 
+/// Renders a `[min — slider — max] [input]` row beneath the base model
+/// dropdown. Returns `None` if the active base model doesn't advertise a
+/// configurable context window, global AI is disabled, or the
+/// [`FeatureFlag::ConfigurableContextWindow`] flag is disabled.
+fn render_context_window_row(
+    appearance: &Appearance,
+    view: &ExecutionProfileEditorView,
+    app: &AppContext,
+) -> Option<Box<dyn Element>> {
+    if !FeatureFlag::ConfigurableContextWindow.is_enabled() {
+        return None;
+    }
+    if !AISettings::as_ref(app).is_any_ai_enabled(app) {
+        return None;
+    }
+    let cw = view.configurable_context_window(app)?;
+    let min = cw.min;
+    let max = cw.max;
+
+    let label = Text::new(
+        "Context window".to_string(),
+        appearance.ui_font_family(),
+        13.,
+    )
+    .with_color(appearance.theme().active_ui_text_color().into())
+    .finish();
+    let min_label_text = min.separate_with_commas();
+    let max_label_text = max.separate_with_commas();
+    let desc = Text::new(
+        "The base model's working memory — how many tokens of your conversation, code, and documents it can consider at once. Larger windows enable longer conversations and more coherent responses over bigger codebases, at the cost of higher latency and compute usage.".to_string(),
+        appearance.ui_font_family(),
+        11.,
+    )
+    .with_color(
+        appearance
+            .theme()
+            .sub_text_color(appearance.theme().surface_1())
+            .into(),
+    )
+    .finish();
+    let label_desc = Flex::column().with_child(label).with_child(desc).finish();
+
+    let min_label = Text::new(min_label_text.clone(), appearance.ui_font_family(), 11.)
+        .with_color(
+            appearance
+                .theme()
+                .sub_text_color(appearance.theme().surface_1())
+                .into(),
+        )
+        .finish();
+    let max_label = Text::new(max_label_text.clone(), appearance.ui_font_family(), 11.)
+        .with_color(
+            appearance
+                .theme()
+                .sub_text_color(appearance.theme().surface_1())
+                .into(),
+        )
+        .finish();
+
+    let current_value = view
+        .current_context_window_display_value(app)
+        .unwrap_or(cw.default_max)
+        .clamp(min, max);
+    let slider = appearance
+        .ui_builder()
+        .slider(view.context_window_slider_state.clone())
+        .with_range(min as f32..max as f32)
+        .with_snap_values(context_window_snap_values(min, max))
+        .with_default_value(current_value as f32)
+        .with_style(UiComponentStyles {
+            width: Some(CONTEXT_WINDOW_SLIDER_WIDTH),
+            margin: Some(Coords::default().left(8.).right(8.)),
+            ..Default::default()
+        })
+        .on_drag(|ctx, _, val| {
+            ctx.dispatch_typed_action(
+                ExecutionProfileEditorViewAction::ContextWindowSliderDragged {
+                    value: val.round() as u32,
+                },
+            );
+        })
+        .on_change(|ctx, _, val| {
+            ctx.dispatch_typed_action(ExecutionProfileEditorViewAction::SetContextWindowSize {
+                value: val.round() as u32,
+            });
+        })
+        .build()
+        .finish();
+
+    let context_window_editor = view.context_window_editor.clone();
+    let input_box = Dismiss::new(
+        appearance
+            .ui_builder()
+            .text_input(view.context_window_editor.clone())
+            .with_style(UiComponentStyles {
+                width: Some(CONTEXT_WINDOW_INPUT_BOX_WIDTH),
+                padding: Some(Coords {
+                    top: 6.,
+                    bottom: 6.,
+                    left: 10.,
+                    right: 10.,
+                }),
+                margin: Some(Coords::default().left(12.)),
+                background: Some(appearance.theme().surface_2().into()),
+                ..Default::default()
+            })
+            .build()
+            .finish(),
+    )
+    .on_dismiss(move |ctx, app| {
+        let buffer_text = context_window_editor.as_ref(app).buffer_text(app);
+        let cleaned: String = buffer_text
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != ',')
+            .collect();
+        if let Ok(parsed) = cleaned.parse::<u32>() {
+            ctx.dispatch_typed_action(ExecutionProfileEditorViewAction::SetContextWindowSize {
+                value: parsed,
+            });
+        }
+    })
+    .finish();
+
+    let slider_row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(min_label)
+        .with_child(slider)
+        .with_child(max_label)
+        .with_child(input_box)
+        .finish();
+
+    Some(
+        Container::new(
+            Flex::column()
+                .with_child(Container::new(label_desc).with_margin_bottom(4.).finish())
+                .with_child(slider_row)
+                .finish(),
+        )
+        .with_margin_bottom(12.)
+        .finish(),
+    )
+}
+
 pub fn render_permissions_section(
     appearance: &Appearance,
     view: &ExecutionProfileEditorView,
@@ -291,16 +440,13 @@ pub fn render_permissions_section(
     app: &warpui::AppContext,
 ) -> Box<dyn Element> {
     let ai_settings = AISettings::as_ref(app);
-    let section_label = crate::t!("settings-exec-profile-editor-section-permissions");
-    let apply_label = crate::t!("settings-exec-profile-editor-apply-code-diffs");
-    let read_label = crate::t!("settings-exec-profile-editor-read-files");
     let mut column = Flex::column().with_children([
         render_separator(appearance),
-        render_section_label(&section_label, appearance),
+        render_section_label("PERMISSIONS", appearance),
         render_permission_row(
             appearance,
             Icon::Code2,
-            &apply_label,
+            "Apply code diffs",
             &view.apply_code_diffs_dropdown,
             profile_data.apply_code_diffs.description(),
             !ai_settings.is_code_diffs_permissions_editable(app),
@@ -311,7 +457,7 @@ pub fn render_permissions_section(
         render_permission_row(
             appearance,
             Icon::Notebook,
-            &read_label,
+            "Read files",
             &view.read_files_dropdown,
             profile_data.read_files.description(),
             !ai_settings.is_read_files_permissions_editable(app),
@@ -332,11 +478,10 @@ pub fn render_permissions_section(
         ));
     }
 
-    let exec_label = crate::t!("settings-exec-profile-editor-execute-commands");
     column.add_child(render_permission_row(
         appearance,
         Icon::Terminal,
-        &exec_label,
+        "Execute commands",
         &view.execute_commands_dropdown,
         profile_data.execute_commands.description(),
         !ai_settings.is_execute_commands_permissions_editable(app),
@@ -370,11 +515,10 @@ pub fn render_permissions_section(
         }
     }
 
-    let interact_label = crate::t!("settings-exec-profile-editor-interact-running-commands");
     column.add_child(render_permission_row(
         appearance,
         Icon::Workflow,
-        &interact_label,
+        "Interact with running commands",
         &view.write_to_pty_dropdown,
         profile_data.write_to_pty.description(),
         !ai_settings.is_write_to_pty_permissions_editable(app),
@@ -384,11 +528,10 @@ pub fn render_permissions_section(
     ));
 
     if FeatureFlag::LocalComputerUse.is_enabled() {
-        let cu_label = crate::t!("settings-exec-profile-editor-computer-use");
         column.add_child(render_permission_row(
             appearance,
             Icon::Laptop,
-            &cu_label,
+            "Computer use",
             &view.computer_use_dropdown,
             profile_data.computer_use.description(),
             !ai_settings.is_computer_use_permissions_editable(app),
@@ -398,11 +541,10 @@ pub fn render_permissions_section(
         ));
     }
 
-    let ask_label = crate::t!("settings-exec-profile-editor-ask-questions");
     column.add_child(render_permission_row(
         appearance,
         Icon::MessageText,
-        &ask_label,
+        "Ask questions",
         &view.ask_user_question_dropdown,
         profile_data.ask_user_question.description(),
         !ai_settings.is_ask_user_question_permissions_editable(app),
@@ -411,11 +553,10 @@ pub fn render_permissions_section(
             .clone(),
     ));
 
-    let mcp_label = crate::t!("settings-exec-profile-editor-call-mcp-servers");
     column.add_child(render_permission_row(
         appearance,
         Icon::Dataflow,
-        &mcp_label,
+        "Call MCP servers",
         &view.call_mcp_servers_dropdown,
         profile_data.mcp_permissions.description(),
         !ai_settings.is_mcp_permission_editable(app), // Use MCP override for this permission
@@ -456,6 +597,12 @@ pub fn render_permissions_section(
                 .finish(),
         );
     }
+
+    column.add_child(
+        Container::new(render_plan_auto_sync_toggle(appearance, view, profile_data))
+            .with_margin_top(16.)
+            .finish(),
+    );
 
     Container::new(column.finish())
         .with_margin_bottom(24.)
@@ -518,10 +665,12 @@ where
             item: display_fn(&item),
             mouse_state_handle,
             on_remove_action: on_remove_action(item),
+            is_disabled: !is_editable,
+            tooltip_mouse_state: None,
         })
         .collect();
 
-    let list = render_input_list(None, input_items, editor, !is_editable, appearance);
+    let list = render_input_list(None, input_items, editor, appearance);
     let list_element = if !is_editable {
         wrap_disabled_with_workspace_override_tooltip(list, tooltip_mouse_state, appearance)
     } else {
@@ -553,11 +702,9 @@ fn render_directory_allowlist_section(
     let ai_settings = AISettings::as_ref(app);
     let is_editable = ai_settings.is_directory_allowlist_editable(app);
 
-    let label = crate::t!("settings-exec-profile-editor-directory-allowlist");
-    let desc = crate::t!("settings-exec-profile-editor-directory-allowlist-desc");
     render_list_section(
-        &label,
-        &desc,
+        "Directory allowlist",
+        "Give the agent file access to certain directories.",
         &profile_data.directory_allowlist,
         &view.directory_allowlist_mouse_state_handles,
         Some(&view.directory_allowlist_editor),
@@ -580,11 +727,9 @@ fn render_command_allowlist_section(
     let ai_settings = AISettings::as_ref(app);
     let is_editable = ai_settings.is_command_allowlist_editable(app);
 
-    let label = crate::t!("settings-exec-profile-editor-command-allowlist");
-    let desc = crate::t!("settings-exec-profile-editor-command-allowlist-desc");
     render_list_section(
-        &label,
-        &desc,
+        "Command allowlist",
+        "Regular expressions to match commands that can be automatically executed by Oz.",
         &profile_data.command_allowlist,
         &view.command_allowlist_mouse_state_handles,
         Some(&view.command_allowlist_editor),
@@ -605,26 +750,59 @@ fn render_command_denylist_section(
     appearance: &Appearance,
     app: &warpui::AppContext,
 ) -> Box<dyn Element> {
-    let ai_settings = AISettings::as_ref(app);
-    let is_editable = ai_settings.is_command_denylist_editable(app);
+    use crate::ai::blocklist::BlocklistAIPermissions;
 
-    let label = crate::t!("settings-exec-profile-editor-command-denylist");
-    let desc = crate::t!("settings-exec-profile-editor-command-denylist-desc");
-    render_list_section(
-        &label,
-        &desc,
-        &profile_data.command_denylist,
-        &view.command_denylist_mouse_state_handles,
-        Some(&view.command_denylist_editor),
+    let ai_disabled = !AISettings::as_ref(app).is_any_ai_enabled(app);
+    let org_denylist = BlocklistAIPermissions::get_org_execute_commands_denylist(app);
+    let mut tooltip_idx = 0usize;
+
+    let input_items: Vec<InputListItem<ExecutionProfileEditorViewAction>> = profile_data
+        .command_denylist
+        .iter()
+        .cloned()
+        .zip(view.command_denylist_mouse_state_handles.iter().cloned())
+        .rev()
+        .map(|(predicate, mouse_state_handle)| {
+            let is_org = org_denylist.contains(&predicate);
+            let tooltip_mouse_state = if is_org {
+                let handle = view
+                    .command_denylist_tooltip_mouse_state_handles
+                    .get(tooltip_idx)
+                    .cloned();
+                tooltip_idx += 1;
+                handle
+            } else {
+                None
+            };
+            InputListItem {
+                item: predicate.to_string(),
+                mouse_state_handle,
+                on_remove_action: ExecutionProfileEditorViewAction::RemoveFromCommandDenylist {
+                    predicate,
+                },
+                is_disabled: is_org || ai_disabled,
+                tooltip_mouse_state,
+            }
+        })
+        .collect();
+
+    let list = render_input_list(
         None,
-        |predicate| ExecutionProfileEditorViewAction::RemoveFromCommandDenylist { predicate },
-        |item| item.to_string(),
+        input_items,
+        Some(&view.command_denylist_editor),
         appearance,
-        is_editable,
-        view.tooltip_mouse_state_handles
-            .command_denylist_editor_tooltip_mouse_state
-            .clone(),
-    )
+    );
+
+    let mut column = Flex::column().with_child(create_section_header(
+        "Command denylist",
+        "Regular expressions to match commands that Oz should always ask permission to execute.",
+        appearance,
+    ));
+    column = column.with_child(list);
+
+    Container::new(column.finish())
+        .with_margin_bottom(16.)
+        .finish()
 }
 
 fn display_mcp_name(uuid: &Uuid, app: &AppContext) -> String {
@@ -643,11 +821,9 @@ fn render_mcp_allowlist_section(
     let ai_settings = AISettings::as_ref(app);
     let is_editable = ai_settings.is_mcp_permission_editable(app);
 
-    let label = crate::t!("settings-exec-profile-editor-mcp-allowlist");
-    let desc = crate::t!("settings-exec-profile-editor-mcp-allowlist-desc");
     render_list_section(
-        &label,
-        &desc,
+        "MCP allowlist",
+        "MCP servers that are allowed to be called by Oz.",
         &profile_data.mcp_allowlist,
         &view.mcp_allowlist_mouse_state_handles,
         None,
@@ -671,11 +847,9 @@ fn render_mcp_denylist_section(
     let ai_settings = AISettings::as_ref(app);
     let is_editable = ai_settings.is_mcp_permission_editable(app);
 
-    let label = crate::t!("settings-exec-profile-editor-mcp-denylist");
-    let desc = crate::t!("settings-exec-profile-editor-mcp-denylist-desc");
     render_list_section(
-        &label,
-        &desc,
+        "MCP denylist",
+        "MCP servers that are not allowed to be called by Oz.",
         &profile_data.mcp_denylist,
         &view.mcp_denylist_mouse_state_handles,
         None,
@@ -689,6 +863,80 @@ fn render_mcp_denylist_section(
             .clone(),
     )
 }
+pub fn render_plan_auto_sync_toggle(
+    appearance: &Appearance,
+    view: &ExecutionProfileEditorView,
+    profile_data: &AIExecutionProfile,
+) -> Box<dyn Element> {
+    let icon_size = 16.0;
+    let icon_elem = Container::new(
+        ConstrainedBox::new(
+            Icon::Compass
+                .to_warpui_icon(appearance.theme().active_ui_text_color())
+                .finish(),
+        )
+        .with_width(icon_size)
+        .with_height(icon_size)
+        .finish(),
+    )
+    .with_margin_right(8.)
+    .finish();
+
+    let label_elem = Text::new(
+        "Plan auto-sync".to_string(),
+        appearance.ui_font_family(),
+        13.,
+    )
+    .with_color(appearance.theme().active_ui_text_color().into())
+    .finish();
+
+    let desc_elem = Text::new(
+        "The plans this agent creates will be automatically added and synced to Warp Drive."
+            .to_string(),
+        appearance.ui_font_family(),
+        11.,
+    )
+    .with_color(
+        appearance
+            .theme()
+            .sub_text_color(appearance.theme().surface_1())
+            .into(),
+    )
+    .finish();
+
+    let current_value = profile_data.autosync_plans_to_warp_drive;
+    let switch = appearance
+        .ui_builder()
+        .switch(view.plan_auto_sync_switch.clone())
+        .check(current_value)
+        .build()
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(ExecutionProfileEditorViewAction::SetPlanAutoSync {
+                enabled: !current_value,
+            });
+        })
+        .finish();
+
+    let left_content = Flex::column()
+        .with_child(
+            Flex::row()
+                .with_child(icon_elem)
+                .with_child(label_elem)
+                .finish(),
+        )
+        .with_child(desc_elem)
+        .finish();
+
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.)
+        .with_child(Shrinkable::new(1., left_content).finish())
+        .with_child(switch)
+        .finish()
+}
+
 pub fn render_web_search_toggle(
     appearance: &Appearance,
     view: &ExecutionProfileEditorView,
@@ -709,7 +957,7 @@ pub fn render_web_search_toggle(
     .finish();
 
     let label_elem = Text::new(
-        crate::t!("settings-exec-profile-editor-call-web-tools"),
+        "Call web tools".to_string(),
         appearance.ui_font_family(),
         13.,
     )
@@ -717,7 +965,7 @@ pub fn render_web_search_toggle(
     .finish();
 
     let desc_elem = Text::new(
-        crate::t!("settings-exec-profile-editor-call-web-tools-desc"),
+        "The agent may use web search when helpful for completing tasks.".to_string(),
         appearance.ui_font_family(),
         11.,
     )
@@ -773,7 +1021,7 @@ pub fn wrap_disabled_with_workspace_override_tooltip(
         if state.is_hovered() {
             let tooltip = appearance
                 .ui_builder()
-                .tool_tip(workspace_override_tooltip_message())
+                .tool_tip(WORKSPACE_OVERRIDE_TOOLTIP_MESSAGE.to_string())
                 .build()
                 .finish();
 
